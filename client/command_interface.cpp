@@ -33,32 +33,45 @@ void handle_list_server(const std::vector<std::string>& args){
 	std::cout << "handle list_server \n";
 }
 
+void handle_delete(const std::vector<std::string>& args){
+	std::cout << "handle delete \n";
+}
+
+void handle_exit(const std::vector<std::string>& args){
+	std::cout << "handle exit \n";
+}
+
 // to connect: ./myClient <username> <server_ip_address> <port>
 
 void print_options () {
 	std::cout << "Commands: \n";
-	std::cout << "# upload <path/filename.ext> \n";
-/*Envia o arquivo filename.ext para o servidor, colocando-o no “sync_dir” do servidor e propagando-o para todos os dispositivos daquele usuário. e.g. upload /home/user/MyFolder/filename.ext*/
-	std::cout << "# download <filename.ext> \n"; 
-/*Faz uma cópia não sincronizada do arquivo filename.ext do servidor para o diretório local (de onde o servidor foi chamado). e.g. download mySpreadsheet.xlsx*/
-	std::cout << "# delete <filename.ext> \n"; 
-//Exclui o arquivo <filename.ext> de “sync_dir”.
-	std::cout << "# list_server \n"; 
-//Lista os arquivos salvos no servidor associados ao usuário.
-	std::cout << "# list_client \n";
-//Lista os arquivos salvos no diretório “sync_dir”
-	std::cout << "# get_sync_dir \n"; 
-//Cria o diretório “sync_dir” e inicia as atividades de sincronização
-	std::cout << "# exit \n"; 
-//Fecha a sessão com o servidor.
+	std::cout << "# upload <path/filename.ext> \n"; //send file to sync_dir (server) and then send them to the devices
+	std::cout << "# download <filename.ext> \n"; //unsyncronized copy (download) of the file to local directory
+	std::cout << "# delete <filename.ext> \n"; //delete the file from sync_dir
+	std::cout << "# list_server \n"; //list all user files in the server
+	//list_client and get_sync_dir: commands executed in the server
+	std::cout << "# exit \n"; // close section with the server
+}
+
+void print_menu(){
+	print_options();
+	std::cout << "Enter the command: ";
 }
 
 int main () {
+
+	std::map<std::string, std::function<void(const std::vector<std::string>&)>> command_map = { 
+		{"upload", handle_upload},
+		{"download", handle_download},
+		{"delete", handle_delete},
+		{"list_server", handle_list_server},
+		{"exit", handle_exit}
+	};
+
 	std::string user_input;
-	print_options();
-	std::cout << "Enter the command: ";
+	print_menu();
 	std::getline(std::cin, user_input);
-	
+
 	auto tokens = tokenize(user_input); //sentence -> vector of strings
 
 	if (tokens.empty()) {
@@ -68,13 +81,7 @@ int main () {
 	
 	std::string command = tokens[0]; //get the first word to know what function to call
 	std::vector<std::string> arguments(tokens.begin() + 1, tokens.end()); //get the arguments if there are any
-	
-	std::map<std::string, std::function<void(const std::vector<std::string>&)>> command_map = { 
-	{"upload", handle_upload},
-	{"download", handle_download},
-	{"list_server", handle_list_server}
-	};
-	
+
 	if (command_map.count(command)) {
 		command_map[command](arguments); //calls the function and sends argument
 	} else {
