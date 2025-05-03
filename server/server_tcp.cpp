@@ -8,77 +8,135 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 
-constexpr int PORT = 4000;
-std::mutex file_mutex; // Usamos mutex para sincronizar threads em processos diferentes
+// constexpr int PORT = 4000;
+// std::mutex file_mutex; // Usamos mutex para sincronizar threads em processos diferentes
 
-void handle_client(int client_socket) {
-    char buffer[256]{};
+constexpr int COMMAND_PORT = 4000;
+constexpr int WATCHER_PORT = 4001;
+constexpr int FILE_PORT = 4002;
+std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 
-    // Tenta ler a mensagem do cliente
-    int n = read(client_socket, buffer, 255);
+// Function to deal with simple command messages
+void handle_command_client(int client_socket) {
+    char buffer[256]{}; // Buffer to store incoming command
+    int n = read(client_socket, buffer, 255); // Read data from the client
+
     if (n <= 0) {
-        perror("ERROR reading from socket");
+        perror("ERROR reading from command socket");
         close(client_socket);
         return;
     }
 
-    // Exibe a mensagem do cliente
-    std::cout << "Received: " << buffer << std::endl;
+    std::cout << "Command received: " << buffer << std::endl;
 
     {
-        // Protege a escrita com mutex
+        // Lock to ensure thread-safe handling of shared resources
         std::lock_guard<std::mutex> lock(file_mutex);
 
-        // Envia uma resposta ao cliente
-        const char* reply = "Servidor recebeu sua mensagem.\n";
+        // Prepare and send a response back to the client
+        const char* reply = "Command received and processed.\n";
         if (write(client_socket, reply, strlen(reply)) < 0) {
-            perror("ERROR writing to socket");
+            perror("ERROR writing to command socket");
         }
     }
 
-    // Encerra a conexão com o cliente
     close(client_socket);
 }
 
-int main() {
+// Listens for updates, could monitor for file changes
+void handle_watcher_client(int client_socket) {
+    char buffer[256]{};
+
+    while (true) {
+        int n = read(client_socket, buffer, 255);
+        if (n <= 0) {
+            perror("ERROR reading from watcher socket");
+            break;
+        }
+
+        std::cout << "Watcher update: " << buffer << std::endl;
+        
+        // Here you would implement the logic to check for changes
+        // and notify the client if there are any files to sync
+    }
+
+    close(client_socket);
+}
+
+// Deals with file transfer logic
+void handle_file_client(int client_socket) {
+    char buffer[256]{};
+    
+    while (true) {
+        int n = read(client_socket, buffer, 255);
+        if (n <= 0) {
+            perror("ERROR reading from file socket");
+            break;
+        }
+
+        std::cout << "File transfer: " << buffer << std::endl;
+        // TODO
+        // Here you would implement the file transfer logic
+    }
+
+    close(client_socket);
+}
+
+void start_server_socket(int port, void (*handler)(int)) {
     int server_fd, client_fd;
     sockaddr_in serv_addr{}, cli_addr{};
     socklen_t clilen = sizeof(cli_addr);
 
-    // Cria um socket TCP no servidor
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
         perror("ERROR opening socket");
-        return 1;
+        return;
     }
 
-    // Preenche os dados do servidor
+    // Set server address and port. Slide 20 Aula-11
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(PORT);
+    serv_addr.sin_port = htons(port); // Ensures correct byte order on the communication. Slide 26 Aula-11
     memset(&(serv_addr.sin_zero), 0, 8);
 
-    // Associa o socket à porta e endereço
-    if (bind(server_fd, reinterpret_cast<sockaddr*>(&serv_addr), sizeof(serv_addr)) < 0) {
+    // Bind the socket to the address and port. Slide 18 Aula-11
+    int bind_result = bind(server_fd, reinterpret_cast<sockaddr*>(&serv_addr), sizeof(serv_addr));
+    if (bind_result < 0) {
         perror("ERROR on binding");
-        return 1;
+        return;
     }
 
-    // Escuta qualquer solicitação de conexão
+    // Start listening for incoming connections (backlog = 5, max number of connections)
+    // Slide 21 Aula-11
     listen(server_fd, 5);
-    std::cout << "Servidor aguardando conexões na porta " << PORT << "...\n";
+    std::cout << "Server listening on port " << port << "...\n";
 
     while (true) {
-        // Aceita uma nova conexão com um cliente
+        // Accept client connections. Slide 22 Aula-11
         client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&cli_addr), &clilen);
         if (client_fd < 0) {
             perror("ERROR on accept");
             continue;
         }
 
-        // Aloca uma thread para esse cliente, passando a função handle_client para essa thread
-        std::thread(handle_client, client_fd).detach();
+        // Create a new detached thread to handle each client
+        std::thread(handler, client_fd).detach();
     }
 
     close(server_fd);
+}
+
+int main() {
+    // Start one server socket per function on different ports
+    std::thread command_thread(start_server_socket, COMMAND_PORT, handle_command_client);
+    std::thread watcher_thread(start_server_socket, WATCHER_PORT, handle_watcher_client);
+    std::thread file_thread(start_server_socket, FILE_PORT, handle_file_client);
+
+    // Wait for each server thread to finish (keeps the main process alive)
+    command_thread.join();
+    watcher_thread.join();
+    file_thread.join();
+
     return 0;
 }
