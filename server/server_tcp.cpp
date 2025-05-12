@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include "../common/packet.h" 
 
 // constexpr int PORT = 4000;
 // std::mutex file_mutex; // Usamos mutex para sincronizar threads em processos diferentes
@@ -18,28 +19,57 @@ std::mutex file_mutex;  // Global mutex used to synchronize access to shared res
 
 // Function to deal with simple command messages
 void handle_command_client(int client_socket) {
-    char buffer[256]{}; // Buffer to store incoming command
-    int n = read(client_socket, buffer, 255); // Read data from the client
+    Packet pkt;
 
-    if (n <= 0) {
-        perror("ERROR reading from command socket");
+ if (!recv_packet(client_socket, pkt)) {
+        std::cerr << "Erro ao receber pacote de comando.\n";
         close(client_socket);
         return;
     }
+    std::string command(pkt.payload, pkt.length);
+    std::cout << "Command received: " << command << std::endl;
 
-    std::cout << "Command received: " << buffer << std::endl;
+  Packet response;
+    response.type = PACKET_TYPE_ACK;
+    response.seqn = pkt.seqn;
+    response.total_size = 0;
 
     {
-        // Lock to ensure thread-safe handling of shared resources
         std::lock_guard<std::mutex> lock(file_mutex);
 
-        // Prepare and send a response back to the client
-        const char* reply = "Command received and processed.\n";
-        if (write(client_socket, reply, strlen(reply)) < 0) {
-            perror("ERROR writing to command socket");
+        if (command.rfind("list_server", 0) == 0) {
+            std::string username;
+            size_t pos = command.find('|');
+            if (pos != std::string::npos) {
+                username = command.substr(pos + 1);
+            }
+
+            std::string user_dir = "server_storage/" + username;
+            std::string response_data;
+
+            if (std::filesystem::exists(user_dir)) {
+                for (const auto& entry : std::filesystem::directory_iterator(user_dir)) {
+                    if (std::filesystem::is_regular_file(entry)) {
+                        response_data += entry.path().filename().string() + "\n";
+                    }
+                }
+                if (response_data.empty()) {
+                    response_data = "(nenhum arquivo encontrado)";
+                }
+            } else {
+                response_data = "(diretório do usuário não encontrado)";
+            }
+
+            response.length = std::min((int)response_data.size(), MAX_PAYLOAD_SIZE);
+            std::memcpy(response.payload, response_data.c_str(), response.length);
+        } else {
+            const char* reply = "Comando desconhecido ou não implementado.";
+            response.length = strlen(reply);
+            std::memcpy(response.payload, reply, response.length);
         }
     }
 
+    send_packet(client_socket, response);
     close(client_socket);
 }
 
