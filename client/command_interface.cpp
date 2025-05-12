@@ -3,6 +3,13 @@
 #include <string>
 #include <map>
 #include <functional>
+#include "../common/packet.h"
+
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <cstring>
+
 
 std::vector<std::string> tokenize(const std::string& input) {
 	std::stringstream ss(input);
@@ -29,8 +36,45 @@ void handle_download(const std::vector<std::string>& args){
 	std::cout << "handle download \n";
 }
 
-void handle_list_server(const std::vector<std::string>& args){
-	std::cout << "handle list_server \n";
+void handle_list_server(const std::vector<std::string>& args, const std::string& username, const std::string& server_ip, int port){
+	 int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        perror("Erro ao criar socket");
+        return;
+    }
+
+    sockaddr_in serv_addr{};
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(port);
+    inet_pton(AF_INET, server_ip.c_str(), &serv_addr.sin_addr);
+
+    if (connect(sockfd, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+        perror("Erro ao conectar no servidor");
+        close(sockfd);
+        return;
+    }
+
+    Packet pkt{};
+    pkt.type = PACKET_TYPE_CMD;
+    pkt.seqn = 1;
+    pkt.total_size = 0;
+    pkt.length = snprintf(pkt.payload, MAX_PAYLOAD_SIZE, "list_server|%s", username.c_str());
+
+    if (!send_packet(sockfd, pkt)) {
+        std::cerr << "Erro ao enviar comando list_server.\n";
+        close(sockfd);
+        return;
+    }
+
+    Packet response;
+    if (recv_packet(sockfd, response)) {
+        std::string filelist(response.payload, response.length);
+        std::cout << "[Arquivos no servidor]\n" << filelist << std::endl;
+    } else {
+        std::cerr << "Erro ao receber resposta do servidor.\n";
+    }
+
+    close(sockfd);
 }
 
 void handle_delete(const std::vector<std::string>& args){
@@ -58,13 +102,21 @@ void print_menu(){
 	std::cout << "Enter the command: ";
 }
 
-int main () {
+int main (int argc, char* argv[]) {
+	if (argc != 4) {
+        std::cerr << "Uso: ./myClient <username> <server_ip_address> <port>\n";
+        return 1;
+    }
+
+    std::string username = argv[1];
+    std::string server_ip = argv[2];
+    int port = std::stoi(argv[3]);
 
 	std::map<std::string, std::function<void(const std::vector<std::string>&)>> command_map = { 
 		{"upload", handle_upload},
 		{"download", handle_download},
 		{"delete", handle_delete},
-		{"list_server", handle_list_server},
+		{"list_server", std::bind(handle_list_server, std::placeholders::_1, username, server_ip, port)},
 		{"exit", handle_exit}
 	};
 
