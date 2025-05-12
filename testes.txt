@@ -1,0 +1,7 @@
+Verificar a operação correta do sync_dir. Inicialmente o device #1 deve colocar um arquivo texto em seu diretório sync_dir local. Verificar se o arquivo aparece corretamente no device #2.
+Device #2 edita o arquivo texto recebido no passo anterior, incluindo um texto adicional, e salva o arquivo. Alteração deve ser propagada para o device #1.
+Device #2 inclui um arquivo PDF em seu sync_dir local. Arquivo deve ser transferido automaticamente para o device #1.
+Device #1 inclui um arquivo de vídeo em seu sync_dir local. Arquivo deve ser transferido automaticamente para o device #2.
+Device #1 faz o upload de um arquivo do desktop. Arquivo deve ser enviado para o servidor e propagado para os diretórios sync_dir de todos os devices daquele usuário. 
+Device #1 faz um download de um arquivo do servidor para o seu desktop. A cópia do arquivo no desktop deverá estar desvinculada do arquivo sincronizado no sync_dir.
+Device #2 desloga e depois loga novamente. Device deve ter uma visão consistente dos arquivos armazenados no servidor.
