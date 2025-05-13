@@ -1,38 +1,44 @@
-# Compilador
 CXX = g++
-CXXFLAGS = -Wall -std=c++17
+CXXFLAGS = -std=c++17 -Wall -Wextra -g -pthread
+LDFLAGS = -lstdc++fs
 
-# Diretórios
-CLIENT_DIR = client
-SERVER_DIR = server
-COMMON_DIR = common
+BIN_DIR = bin
+SERVER_SRC = server_dir/server_tcp.cpp
+CLIENT_SRC = client/command_interface.cpp
+COMMON_SRC = common/packet.cpp
 
-# Fontes
-CLIENT_SRC = $(CLIENT_DIR)/client_tcp.cpp \
-             $(CLIENT_DIR)/command_interface.cpp \
-             $(COMMON_DIR)/packet.cpp
+SERVER_BIN = $(BIN_DIR)/server_exec
+CLIENT_BIN = $(BIN_DIR)/myClient
 
-SERVER_SRC = $(SERVER_DIR)/server_tcp.cpp \
-             $(COMMON_DIR)/packet.cpp
+# Diretório de armazenamento do servidor
+STORAGE_DIR = server_storage
+DEFAULT_USERS = testuser
 
-# Objetos
-CLIENT_OBJ = $(CLIENT_SRC:.cpp=.o)
-SERVER_OBJ = $(SERVER_SRC:.cpp=.o)
+# Diretório do cliente
+CLIENT_SYNC_DIR = client_sync
 
-# Binaries
-CLIENT_BIN = myClient
-SERVER_BIN = myServer
+all: setup $(SERVER_BIN) $(CLIENT_BIN)
 
-# Targets
-.PHONY: all clean
+# Cria pastas necessárias
+setup:
+	mkdir -p $(BIN_DIR)
+	mkdir -p $(STORAGE_DIR)
+	mkdir -p $(CLIENT_SYNC_DIR)
+	@for user in $(DEFAULT_USERS); do \
+		mkdir -p $(STORAGE_DIR)/$$user; \
+		mkdir -p $(CLIENT_SYNC_DIR)/$$user; \
+	done
 
-all: $(CLIENT_BIN) $(SERVER_BIN)
+$(SERVER_BIN): $(SERVER_SRC) $(COMMON_SRC)
+	$(CXX) $(CXXFLAGS) -o $@ $(SERVER_SRC) $(COMMON_SRC) $(LDFLAGS)
 
-$(CLIENT_BIN): $(CLIENT_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^
-
-$(SERVER_BIN): $(SERVER_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+$(CLIENT_BIN): $(CLIENT_SRC) $(COMMON_SRC)
+	$(CXX) $(CXXFLAGS) -o $@ $(CLIENT_SRC) $(COMMON_SRC) $(LDFLAGS)
 
 clean:
-	rm -f $(CLIENT_BIN) $(SERVER_BIN) $(CLIENT_OBJ) $(SERVER_OBJ)
+	rm -rf $(BIN_DIR)
+
+clean_all: clean
+	rm -rf $(STORAGE_DIR) $(CLIENT_SYNC_DIR)
+
+.PHONY: all clean clean_all setup
