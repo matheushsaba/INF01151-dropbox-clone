@@ -1,6 +1,7 @@
 #include "packet.h"
 #include <cstring>
 #include <sys/socket.h>
+#include <filesystem>
 
 int serialize_packet(const Packet& pkt, char* buffer, size_t buffer_size) {
     if (buffer_size < sizeof(pkt.type) + sizeof(pkt.seqn) + sizeof(pkt.total_size) + sizeof(pkt.length) + pkt.length) {

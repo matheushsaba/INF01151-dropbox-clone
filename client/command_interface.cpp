@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <cstring>
+#include <filesystem>
 
 
 std::vector<std::string> tokenize(const std::string& input) {
@@ -33,6 +34,7 @@ void handle_upload(const std::vector<std::string>& args){
 }
 
 void handle_download(const std::vector<std::string>& args){
+	(void)args;
 	std::cout << "handle download \n";
 }
 
@@ -73,15 +75,17 @@ void handle_list_server(const std::vector<std::string>& args, const std::string&
     } else {
         std::cerr << "Erro ao receber resposta do servidor.\n";
     }
-
+	(void)args;
     close(sockfd);
 }
 
 void handle_delete(const std::vector<std::string>& args){
+	(void)args;
 	std::cout << "handle delete \n";
 }
 
 void handle_exit(const std::vector<std::string>& args){
+	(void)args;
 	std::cout << "handle exit \n";
 }
 

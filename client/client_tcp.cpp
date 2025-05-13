@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <thread>
+#include <filesystem>
 
 // constexpr int PORT = 4000;
 
