@@ -9,6 +9,8 @@
 #include <filesystem>
 #include <sys/socket.h>
 #include "../common/packet.h" 
+#include <fstream>  // Para std::ofstream
+
 
 // constexpr int PORT = 4000;
 // std::mutex file_mutex; // Usamos mutex para sincronizar threads em processos diferentes
@@ -94,24 +96,55 @@ void handle_watcher_client(int client_socket) {
     close(client_socket);
 }
 
-// Deals with file transfer logic
+// Deals with file transfer logic (upload)
 void handle_file_client(int client_socket) {
-    char buffer[256]{};
-    
+    // Receber o nome do arquivo (primeiro pacote)
+    Packet pkt;
+    if (!recv_packet(client_socket, pkt)) {
+        std::cerr << "Erro ao receber nome do arquivo.\n";
+        close(client_socket);
+        return;
+    }
+
+    std::string filename(pkt.payload, pkt.length);
+    std::cout << "Recebendo arquivo: " << filename << std::endl;
+
+    // Abrir arquivo no servidor para salvar os dados
+    std::ofstream out_file("server_storage/" + filename, std::ios::binary);
+    if (!out_file.is_open()) {
+        std::cerr << "Erro ao criar arquivo para o upload.\n";
+        close(client_socket);
+        return;
+    }
+
+    // Loop para receber pacotes de dados e escrever no arquivo
     while (true) {
-        int n = read(client_socket, buffer, 255);
-        if (n <= 0) {
-            perror("ERROR reading from file socket");
+        if (!recv_packet(client_socket, pkt)) {
+            std::cerr << "Erro ao receber pacote de dados.\n";
             break;
         }
 
-        std::cout << "File transfer: " << buffer << std::endl;
-        // TODO
-        // Here you would implement the file transfer logic
+        // Se o pacote for vazio (length == 0), significa que o upload terminou
+        if (pkt.length == 0) {
+            std::cout << "Upload concluído.\n";
+            break;
+        }
+
+        // Escrever o conteúdo do pacote no arquivo
+        out_file.write(pkt.payload, pkt.length);
+        if (!out_file) {
+            std::cerr << "Erro ao escrever dados no arquivo.\n";
+            break;
+        }
+
+        std::cout << "Recebido pacote: seqn " << pkt.seqn << " com " << pkt.length << " bytes.\n";
     }
 
+    // Fechar o arquivo e a conexão
+    out_file.close();
     close(client_socket);
 }
+
 
 void start_server_socket(int port, void (*handler)(int)) {
     int server_fd, client_fd;

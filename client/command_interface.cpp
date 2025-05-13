@@ -10,6 +10,8 @@
 #include <unistd.h>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+
 
 
 std::vector<std::string> tokenize(const std::string& input) {
@@ -23,14 +25,80 @@ std::vector<std::string> tokenize(const std::string& input) {
 	return tokens;
 }
 
-void handle_upload(const std::vector<std::string>& args){
-	std::cout << "handle upload: ";
-	std::ostringstream oss;
-	for (const auto& arg : args) {
-		oss << arg << " ";
-	}
-	std::string args_str = oss.str();
-	std::cout << args_str << "\n";
+void handle_upload(const std::vector<std::string>& args, const std::string& server_ip, int port) {
+    if (args.empty()) {
+        std::cerr << "Erro: Nenhum caminho de arquivo fornecido.\n";
+        return;
+    }
+    
+    std::string file_path = args[0]; // O primeiro argumento é o caminho do arquivo
+    std::ifstream file(file_path, std::ios::binary);
+
+    if (!file.is_open()) {
+        std::cerr << "Erro ao abrir o arquivo: " << file_path << std::endl;
+        return;
+    }
+
+    std::cout << "Iniciando upload do arquivo: " << file_path << std::endl;
+
+    // Criando o socket e conectando ao servidor
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        perror("Erro ao criar socket");
+        return;
+    }
+
+    sockaddr_in serv_addr{};
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(port);
+    inet_pton(AF_INET, server_ip.c_str(), &serv_addr.sin_addr);
+
+    if (connect(sockfd, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+        perror("Erro ao conectar ao servidor");
+        close(sockfd);
+        return;
+    }
+
+    // Enviar o nome do arquivo para o servidor
+    Packet pkt;
+    pkt.type = PACKET_TYPE_CMD;
+    pkt.seqn = 1;
+    std::string filename = file_path.substr(file_path.find_last_of("/\\") + 1); // Extrai o nome do arquivo
+    pkt.length = filename.size();
+    std::memcpy(pkt.payload, filename.c_str(), pkt.length);
+
+    if (!send_packet(sockfd, pkt)) {
+        std::cerr << "Erro ao enviar o nome do arquivo para o servidor.\n";
+        close(sockfd);
+        return;
+    }
+
+    // Enviar o conteúdo do arquivo em pacotes
+    char buffer[MAX_PAYLOAD_SIZE];
+    int seqn = 1;
+
+    while (file.read(buffer, MAX_PAYLOAD_SIZE) || file.gcount() > 0) {
+        pkt.type = PACKET_TYPE_DATA;
+        pkt.seqn = seqn++;
+        pkt.length = file.gcount();
+        std::memcpy(pkt.payload, buffer, pkt.length);
+
+        if (!send_packet(sockfd, pkt)) {
+            std::cerr << "Erro ao enviar o pacote de dados para o servidor.\n";
+            break;
+        }
+    }
+
+    // Enviar um pacote com 0 de comprimento para indicar o fim do upload
+    pkt.type = PACKET_TYPE_DATA;
+    pkt.seqn = seqn;
+    pkt.length = 0;
+    send_packet(sockfd, pkt); // Indica o fim do arquivo
+
+    std::cout << "Upload concluído com sucesso.\n";
+
+    // Fechar o socket
+    close(sockfd);
 }
 
 void handle_download(const std::vector<std::string>& args){
@@ -117,7 +185,7 @@ int main (int argc, char* argv[]) {
     int port = std::stoi(argv[3]);
 
 	std::map<std::string, std::function<void(const std::vector<std::string>&)>> command_map = { 
-		{"upload", handle_upload},
+		{"upload", std::bind(handle_upload, std::placeholders::_1, server_ip, port)},
 		{"download", handle_download},
 		{"delete", handle_delete},
 		{"list_server", std::bind(handle_list_server, std::placeholders::_1, username, server_ip, port)},
