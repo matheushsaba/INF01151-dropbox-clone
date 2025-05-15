@@ -1,10 +1,9 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -g -pthread
-LDFLAGS = -lstdc++fs
 
 BIN_DIR = bin
 SERVER_SRC = server_dir/server_tcp.cpp
-CLIENT_SRC = client/command_interface.cpp
+CLIENT_SRC = client/client_tcp.cpp client/command_interface.cpp
 COMMON_SRC = common/packet.cpp
 
 SERVER_BIN = $(BIN_DIR)/server_exec

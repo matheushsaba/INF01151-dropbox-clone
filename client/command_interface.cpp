@@ -3,16 +3,20 @@
 #include <string>
 #include <map>
 #include <functional>
-#include "../common/packet.h"
+#include <vector>
+#include "command_interface.hpp"
 
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
+//pointers to the client functions, initialized by init_command_callbacks
+static std::function<void(const std::string&)> send_command_function;
+static std::function<void(const std::string&)> send_file_function;
 
-
+void init_command_callbacks(
+    std::function<void(const std::string&)> send_command_cb,
+    std::function<void(const std::string&)> send_file_cb
+) {
+    send_command_function = std::move(send_command_cb);
+    send_file_function = std::move(send_file_cb);
+}
 
 std::vector<std::string> tokenize(const std::string& input) {
 	std::stringstream ss(input);
@@ -25,80 +29,13 @@ std::vector<std::string> tokenize(const std::string& input) {
 	return tokens;
 }
 
-void handle_upload(const std::vector<std::string>& args, const std::string& server_ip, int port) {
+void handle_upload(const std::vector<std::string>& args){
     if (args.empty()) {
-        std::cerr << "Erro: Nenhum caminho de arquivo fornecido.\n";
+        std::cout << "Usage: upload <filename>\n";
         return;
     }
-    
-    std::string file_path = args[0]; // O primeiro argumento é o caminho do arquivo
-    std::ifstream file(file_path, std::ios::binary);
-
-    if (!file.is_open()) {
-        std::cerr << "Erro ao abrir o arquivo: " << file_path << std::endl;
-        return;
-    }
-
-    std::cout << "Iniciando upload do arquivo: " << file_path << std::endl;
-
-    // Criando o socket e conectando ao servidor
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        perror("Erro ao criar socket");
-        return;
-    }
-
-    sockaddr_in serv_addr{};
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(port);
-    inet_pton(AF_INET, server_ip.c_str(), &serv_addr.sin_addr);
-
-    if (connect(sockfd, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("Erro ao conectar ao servidor");
-        close(sockfd);
-        return;
-    }
-
-    // Enviar o nome do arquivo para o servidor
-    Packet pkt;
-    pkt.type = PACKET_TYPE_CMD;
-    pkt.seqn = 1;
-    std::string filename = file_path.substr(file_path.find_last_of("/\\") + 1); // Extrai o nome do arquivo
-    pkt.length = filename.size();
-    std::memcpy(pkt.payload, filename.c_str(), pkt.length);
-
-    if (!send_packet(sockfd, pkt)) {
-        std::cerr << "Erro ao enviar o nome do arquivo para o servidor.\n";
-        close(sockfd);
-        return;
-    }
-
-    // Enviar o conteúdo do arquivo em pacotes
-    char buffer[MAX_PAYLOAD_SIZE];
-    int seqn = 1;
-
-    while (file.read(buffer, MAX_PAYLOAD_SIZE) || file.gcount() > 0) {
-        pkt.type = PACKET_TYPE_DATA;
-        pkt.seqn = seqn++;
-        pkt.length = file.gcount();
-        std::memcpy(pkt.payload, buffer, pkt.length);
-
-        if (!send_packet(sockfd, pkt)) {
-            std::cerr << "Erro ao enviar o pacote de dados para o servidor.\n";
-            break;
-        }
-    }
-
-    // Enviar um pacote com 0 de comprimento para indicar o fim do upload
-    pkt.type = PACKET_TYPE_DATA;
-    pkt.seqn = seqn;
-    pkt.length = 0;
-    send_packet(sockfd, pkt); // Indica o fim do arquivo
-
-    std::cout << "Upload concluído com sucesso.\n";
-
-    // Fechar o socket
-    close(sockfd);
+    // Chama a função do client para enviar o arquivo
+    send_file_function(args[0]);
 }
 
 void handle_download(const std::vector<std::string>& args){
@@ -106,45 +43,8 @@ void handle_download(const std::vector<std::string>& args){
 	std::cout << "handle download \n";
 }
 
-void handle_list_server(const std::vector<std::string>& args, const std::string& username, const std::string& server_ip, int port){
-	 int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        perror("Erro ao criar socket");
-        return;
-    }
-
-    sockaddr_in serv_addr{};
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(port);
-    inet_pton(AF_INET, server_ip.c_str(), &serv_addr.sin_addr);
-
-    if (connect(sockfd, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("Erro ao conectar no servidor");
-        close(sockfd);
-        return;
-    }
-
-    Packet pkt{};
-    pkt.type = PACKET_TYPE_CMD;
-    pkt.seqn = 1;
-    pkt.total_size = 0;
-    pkt.length = snprintf(pkt.payload, MAX_PAYLOAD_SIZE, "list_server|%s", username.c_str());
-
-    if (!send_packet(sockfd, pkt)) {
-        std::cerr << "Erro ao enviar comando list_server.\n";
-        close(sockfd);
-        return;
-    }
-
-    Packet response;
-    if (recv_packet(sockfd, response)) {
-        std::string filelist(response.payload, response.length);
-        std::cout << "[Arquivos no servidor]\n" << filelist << std::endl;
-    } else {
-        std::cerr << "Erro ao receber resposta do servidor.\n";
-    }
-	(void)args;
-    close(sockfd);
+void handle_list_server(const std::vector<std::string>& args){
+ 
 }
 
 void handle_delete(const std::vector<std::string>& args){
@@ -174,33 +74,20 @@ void print_menu(){
 	std::cout << "Enter the command: ";
 }
 
-int main (int argc, char* argv[]) {
-	if (argc != 4) {
-        std::cerr << "Uso: ./myClient <username> <server_ip_address> <port>\n";
-        return 1;
-    }
+void process_command(const std::string& user_input){
 
-    std::string username = argv[1];
-    std::string server_ip = argv[2];
-    int port = std::stoi(argv[3]);
-
-	std::map<std::string, std::function<void(const std::vector<std::string>&)>> command_map = { 
-		{"upload", std::bind(handle_upload, std::placeholders::_1, server_ip, port)},
+	static std::map<std::string, std::function<void(const std::vector<std::string>&)>> command_map = { 
+		{"upload", handle_upload},
 		{"download", handle_download},
 		{"delete", handle_delete},
-		{"list_server", std::bind(handle_list_server, std::placeholders::_1, username, server_ip, port)},
+		{"list_server", handle_list_server},
 		{"exit", handle_exit}
 	};
-
-	std::string user_input;
-	print_menu();
-	std::getline(std::cin, user_input);
 
 	auto tokens = tokenize(user_input); //sentence -> vector of strings
 
 	if (tokens.empty()) {
 		std::cout << "No command entered";
-		return 1;
 	}
 	
 	std::string command = tokens[0]; //get the first word to know what function to call
@@ -211,5 +98,4 @@ int main (int argc, char* argv[]) {
 	} else {
 		std::cout << "Command unknown: " << command << std::endl;
 	}
-	return 0;
 }

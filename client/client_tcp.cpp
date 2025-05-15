@@ -8,6 +8,7 @@
 #include <netinet/in.h>
 #include <thread>
 #include <filesystem>
+#include "command_interface.hpp"
 
 // constexpr int PORT = 4000;
 
@@ -109,23 +110,20 @@ int main(int argc, char* argv[]) {
     connect_to_port(file_socket, FILE_PORT);
 
     start_watcher(); // Start the watcher thread
+    
+    init_command_callbacks(send_command, send_file);
 
     std::string input;
     while (true) {
+        print_menu();
         std::cout << "Command ('exit' to quit): ";
         std::getline(std::cin, input);
 
-        if (input == "exit")
+        if (input == "exit") {
             break;
-
-        if (input.substr(0, 4) == "file") {
-            // TODO
-            // Handle file transfer command
-            std::string filename = input.substr(5);
-            send_file(filename);
         } else {
             // Handle regular command
-            send_command(input);
+            process_command(input);
         }
     }
 
