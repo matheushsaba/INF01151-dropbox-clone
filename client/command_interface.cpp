@@ -29,13 +29,18 @@ std::vector<std::string> tokenize(const std::string& input) {
 	return tokens;
 }
 
+void handle_help(const std::vector<std::string>&) {
+    print_menu();
+}
+
 void handle_upload(const std::vector<std::string>& args){
     if (args.empty()) {
         std::cout << "Usage: upload <filename>\n";
         return;
     }
-    // Chama a função do client para enviar o arquivo
-    send_file_function(args[0]);
+    const std::string& path = args[0];
+    std::cout << "Uploading file: " << path << "\n";
+    send_file_function(path);
 }
 
 void handle_download(const std::vector<std::string>& args){
@@ -81,13 +86,15 @@ void process_command(const std::string& user_input){
 		{"download", handle_download},
 		{"delete", handle_delete},
 		{"list_server", handle_list_server},
-		{"exit", handle_exit}
+		{"exit", handle_exit},
+        {"help", handle_help},
 	};
 
 	auto tokens = tokenize(user_input); //sentence -> vector of strings
 
 	if (tokens.empty()) {
 		std::cout << "No command entered";
+        return;
 	}
 	
 	std::string command = tokens[0]; //get the first word to know what function to call
@@ -96,6 +103,6 @@ void process_command(const std::string& user_input){
 	if (command_map.count(command)) {
 		command_map[command](arguments); //calls the function and sends argument
 	} else {
-		std::cout << "Command unknown: " << command << std::endl;
+		std::cout << "Unknown command: \"" << command << "\". Type 'help' to see available commands.\n";
 	}
 }
