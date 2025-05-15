@@ -1,21 +1,20 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -g -pthread
-LDFLAGS = -lstdc++fs
 
 BIN_DIR = bin
 SERVER_SRC = server_dir/server_tcp.cpp
-CLIENT_SRC = client/command_interface.cpp
+CLIENT_SRC = client/client_tcp.cpp client/command_interface.cpp
 COMMON_SRC = common/packet.cpp
 
 SERVER_BIN = $(BIN_DIR)/server_exec
 CLIENT_BIN = $(BIN_DIR)/myClient
 
 # Diretório de armazenamento do servidor
-STORAGE_DIR = server_storage
+STORAGE_DIR = server/sync_dir
 DEFAULT_USERS = testuser
 
 # Diretório do cliente
-CLIENT_SYNC_DIR = client_sync
+CLIENT_SYNC_DIR = client/sync_dir
 
 all: setup $(SERVER_BIN) $(CLIENT_BIN)
 

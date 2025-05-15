@@ -8,6 +8,9 @@
 #include <netinet/in.h>
 #include <thread>
 #include <filesystem>
+#include <fstream>
+#include "command_interface.hpp"
+#include "../common/packet.h"
 
 // constexpr int PORT = 4000;
 
@@ -82,13 +85,54 @@ void start_watcher() {
     }).detach(); // Detach the thread to run independently
 }
 
-void send_file(const std::string& filename) {
-    // TODO
-    std::string message = "Sending file: " + filename;
-    if (write(file_socket, message.c_str(), message.length()) < 0) {
-        perror("ERROR writing to file socket");
+void send_file(const std::string& file_path) {
+    std::ifstream file(file_path, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "Erro ao abrir arquivo: " << file_path << "\n";
+        return;
     }
+
+    std::cout << "Iniciando upload do arquivo: " << file_path << std::endl;
+
+    Packet pkt{};
+    pkt.type = PACKET_TYPE_CMD;
+    pkt.seqn = 1;
+
+
+    std::string filename = file_path.substr(file_path.find_last_of("/\\") + 1);
+
+    pkt.length = filename.size();
+    std::memcpy(pkt.payload, filename.c_str(), pkt.length);
+
+    if (!send_packet(file_socket, pkt)) {
+        std::cerr << "Erro ao enviar o nome do arquivo\n";
+        return;
+    }
+
+    char buffer[MAX_PAYLOAD_SIZE];
+    int seqn = 2;
+
+    while (file.read(buffer, MAX_PAYLOAD_SIZE) || file.gcount() > 0) {
+        pkt.type = PACKET_TYPE_DATA;
+        pkt.seqn = seqn++;
+        pkt.length = file.gcount();
+        std::memcpy(pkt.payload, buffer, pkt.length);
+
+        if (!send_packet(file_socket, pkt)) {
+            std::cerr << "Erro ao enviar pacote de dados\n";
+            break;
+        }
+    }
+
+    // send packet with lenght 0 to indicate the end of the upload
+    pkt.type = PACKET_TYPE_DATA;
+    pkt.seqn = seqn;
+    pkt.length = 0;
+    send_packet(file_socket, pkt); // end of file
+
+    std::cout << "Upload concluído com sucesso.\n";
 }
+
 
 void cleanup_sockets() {
     close(command_socket);
@@ -110,22 +154,19 @@ int main(int argc, char* argv[]) {
 
     start_watcher(); // Start the watcher thread
 
+    init_command_callbacks(send_command, send_file);
+
     std::string input;
     while (true) {
+        print_menu();
         std::cout << "Command ('exit' to quit): ";
         std::getline(std::cin, input);
 
-        if (input == "exit")
+        if (input == "exit") {
             break;
-
-        if (input.substr(0, 4) == "file") {
-            // TODO
-            // Handle file transfer command
-            std::string filename = input.substr(5);
-            send_file(filename);
         } else {
             // Handle regular command
-            send_command(input);
+            process_command(input);
         }
     }
 
