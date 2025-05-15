@@ -133,6 +133,21 @@ void send_file(const std::string& file_path) {
     std::cout << "Upload concluído com sucesso.\n";
 }
 
+// Returns an absolute string path to <project-root>/client_storage/sync_dir
+// and guarantees that the directory hierarchy exists.
+std::string get_sync_dir()
+{
+    namespace fs = std::filesystem;
+    fs::path sync_dir = fs::path{"client_storage"} / "sync_dir";
+
+    std::error_code ec;
+    fs::create_directories(sync_dir, ec);          // idempotent
+    if (ec) {
+        std::cerr << "Warning: could not create " << sync_dir
+                  << " (" << ec.message() << ")\n";
+    }
+    return fs::absolute(sync_dir).string();
+}
 
 void cleanup_sockets() {
     close(command_socket);
@@ -147,6 +162,10 @@ int main(int argc, char* argv[]) {
     }
 
     hostname = argv[1];
+
+    // Creates the client sync_dir
+    std::string g_sync_dir = get_sync_dir();
+    std::cout << "Local sync directory: " << g_sync_dir << '\n';
 
     connect_to_port(command_socket, COMMAND_PORT);
     connect_to_port(watcher_socket, WATCHER_PORT);
