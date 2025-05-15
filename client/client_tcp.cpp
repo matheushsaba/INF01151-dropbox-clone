@@ -22,6 +22,7 @@ int command_socket;
 int watcher_socket;
 int file_socket;
 std::string hostname;
+std::string username;
 
 // Method to create a socket and connect it to the specified port
 void connect_to_port(int& socket_fd, int port) {
@@ -156,12 +157,15 @@ void cleanup_sockets() {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <server_ip>\n";
+    if (argc < 4) {
+        std::cerr << "Usage: " << argv[0]
+                  << " <username> <server_ip_address> <port>\n";
         return 1;
     }
 
-    hostname = argv[1];
+    username = argv[1];                  // e.g. "alice"
+    hostname = argv[2];                  // e.g. "127.0.0.1"
+    int base_port = std::stoi(argv[3]);  // e.g. 4000
 
     // Creates the client sync_dir
     std::string g_sync_dir = get_sync_dir();
