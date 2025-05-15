@@ -134,19 +134,28 @@ void send_file(const std::string& file_path) {
     std::cout << "Upload concluído com sucesso.\n";
 }
 
-// Returns an absolute string path to <project-root>/client_storage/sync_dir
-// and guarantees that the directory hierarchy exists.
+// ---------------------------------------------------------------------------
+// Returns an **absolute** path to client_storage/sync_dir_<username>
+// and guarantees that the directory exists (idempotent).
+// If the same username is reused, the same directory is returned.
+// ---------------------------------------------------------------------------
 std::string get_sync_dir()
 {
     namespace fs = std::filesystem;
-    fs::path sync_dir = fs::path{"client_storage"} / "sync_dir";
+
+    if (username.empty()) {
+        throw std::runtime_error("get_sync_dir() called before username is set");
+    }
+
+    fs::path sync_dir = fs::path{"client_storage"} / ("sync_dir_" + username);
 
     std::error_code ec;
-    fs::create_directories(sync_dir, ec);          // idempotent
+    fs::create_directories(sync_dir, ec); // creates intermediate dirs too
     if (ec) {
         std::cerr << "Warning: could not create " << sync_dir
                   << " (" << ec.message() << ")\n";
     }
+
     return fs::absolute(sync_dir).string();
 }
 
