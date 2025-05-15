@@ -10,11 +10,11 @@ SERVER_BIN = $(BIN_DIR)/server_exec
 CLIENT_BIN = $(BIN_DIR)/myClient
 
 # Diretório de armazenamento do servidor
-STORAGE_DIR = server_storage
+STORAGE_DIR = server/sync_dir
 DEFAULT_USERS = testuser
 
 # Diretório do cliente
-CLIENT_SYNC_DIR = client_sync
+CLIENT_SYNC_DIR = client/sync_dir
 
 all: setup $(SERVER_BIN) $(CLIENT_BIN)
 
