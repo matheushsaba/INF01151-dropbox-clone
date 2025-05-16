@@ -11,6 +11,7 @@
 #include <fstream>
 #include "command_interface.hpp"
 #include "../common/packet.h"
+#include <sys/stat.h>
 
 // constexpr int PORT = 4000;
 
@@ -202,6 +203,41 @@ bool delete_from_sync_dir(const std::string& filename) {
 
     std::cout << "Arquivo removido: " << target_path << '\n';
     return true;
+}
+
+void list_client_sync_dir() {
+    namespace fs = std::filesystem;
+
+    fs::path sync_dir = get_sync_dir();
+
+    std::cout << "\nArquivos no diretório de sincronização de " << username << ":\n";
+    std::cout << "-------------------------------------------------------------\n";
+
+    for (const auto& entry : fs::directory_iterator(sync_dir)) {
+        if (!entry.is_regular_file()) continue;
+
+        const auto& path = entry.path();
+        std::string filename = path.filename().string();
+
+        std::error_code ec;
+        auto ftime = fs::last_write_time(path, ec);
+        auto s = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+            ftime - fs::file_time_type::clock::now()
+            + std::chrono::system_clock::now()
+        );
+
+        struct stat stat_buf;
+        if (stat(path.c_str(), &stat_buf) != 0) {
+            perror("stat");
+            continue;
+        }
+
+        std::cout << "Nome: " << filename << '\n';
+        std::cout << "  Acesso (atime):    " << std::asctime(std::localtime(&stat_buf.st_atime));
+        std::cout << "  Modificado (mtime): " << std::asctime(std::localtime(&stat_buf.st_mtime));
+        std::cout << "  Criado (ctime):     " << std::asctime(std::localtime(&stat_buf.st_ctime));
+        std::cout << "-------------------------------------------------------------\n";
+    }
 }
 
 // ---------------------------------------------------------------------------

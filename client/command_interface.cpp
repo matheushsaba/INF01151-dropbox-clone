@@ -67,6 +67,10 @@ void handle_list_server(const std::vector<std::string>& args){
  
 }
 
+void handle_list_client(const std::vector<std::string>&) {
+    list_client_sync_dir();
+}
+
 void handle_delete(const std::vector<std::string>& args) {
     if (args.empty()) {
         std::cout << "Usage: delete <filename>\n";
@@ -94,7 +98,8 @@ void print_options () {
 	std::cout << "# download <filename.ext> \n"; //unsyncronized copy (download) of the file to local directory
 	std::cout << "# delete <filename.ext> \n"; //delete the file from sync_dir
 	std::cout << "# list_server \n"; //list all user files in the server
-	//list_client and get_sync_dir: commands executed in the server
+	std::cout << "# list_client \n"; //list all user files in the client
+	//get_sync_dir: command executed in the server
 	std::cout << "# exit \n"; // close section with the server
 }
 
@@ -110,6 +115,7 @@ void process_command(const std::string& user_input){
 		{"download", handle_download},
 		{"delete", handle_delete},
 		{"list_server", handle_list_server},
+		{"list_client", handle_list_client},
 		{"exit", handle_exit},
         {"help", handle_help},
 	};
