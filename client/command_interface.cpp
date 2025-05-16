@@ -33,14 +33,19 @@ void handle_help(const std::vector<std::string>&) {
     print_menu();
 }
 
-void handle_upload(const std::vector<std::string>& args){
+void handle_upload(const std::vector<std::string>& args) {
     if (args.empty()) {
         std::cout << "Usage: upload <filename>\n";
         return;
     }
+
     const std::string& path = args[0];
     std::cout << "Uploading file: " << path << "\n";
-    send_file_function(path);
+
+    std::string sync_path = move_file_to_sync_dir(path);
+    if (!sync_path.empty()) {
+        send_file_function(sync_path); // Upload from sync_dir
+    }
 }
 
 void handle_download(const std::vector<std::string>& args){

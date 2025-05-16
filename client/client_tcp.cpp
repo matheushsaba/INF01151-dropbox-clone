@@ -24,6 +24,8 @@ int file_socket;
 std::string hostname;
 std::string username;
 
+std::string get_sync_dir();
+
 // Method to create a socket and connect it to the specified port
 void connect_to_port(int& socket_fd, int port) {
     sockaddr_in serv_addr{};    // Initializes a struct of type sockaddr_in that is going to be filled later. Slide 20 Aula-11
@@ -132,6 +134,31 @@ void send_file(const std::string& file_path) {
     send_packet(file_socket, pkt); // end of file
 
     std::cout << "Upload concluído com sucesso.\n";
+}
+
+// Moves a file to the user's sync directory.
+// Returns the full destination path or empty string on error.
+std::string move_file_to_sync_dir(const std::string& source_path) {
+    namespace fs = std::filesystem;
+
+    fs::path src_path(source_path);
+    if (!fs::exists(src_path)) {
+        std::cerr << "Arquivo não encontrado: " << source_path << '\n';
+        return "";
+    }
+
+    std::string filename = src_path.filename().string();
+    fs::path dest_path = fs::path(get_sync_dir()) / filename;
+
+    std::error_code ec;
+    fs::copy_file(src_path, dest_path, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::cerr << "Erro ao copiar para a pasta de sincronização: " << ec.message() << '\n';
+        return "";
+    }
+
+    std::cout << "Arquivo movido para a pasta de sincronização: " << dest_path << '\n';
+    return dest_path.string();
 }
 
 // ---------------------------------------------------------------------------
