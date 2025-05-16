@@ -161,6 +161,28 @@ std::string move_file_to_sync_dir(const std::string& source_path) {
     return dest_path.string();
 }
 
+std::string download_from_sync_dir(const std::string& filename) {
+    namespace fs = std::filesystem;
+
+    fs::path sync_path = fs::path(get_sync_dir()) / filename;
+    fs::path target_path = fs::current_path() / filename;
+
+    if (!fs::exists(sync_path)) {
+        std::cerr << "Arquivo não encontrado no diretório de sincronização: " << sync_path << '\n';
+        return "";
+    }
+
+    std::error_code ec;
+    fs::copy_file(sync_path, target_path, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::cerr << "Erro ao copiar arquivo para o diretório atual: " << ec.message() << '\n';
+        return "";
+    }
+
+    std::cout << "Arquivo copiado para o diretório atual: " << target_path << '\n';
+    return target_path.string();
+}
+
 // ---------------------------------------------------------------------------
 // Returns an **absolute** path to client_storage/sync_dir_<username>
 // and guarantees that the directory exists (idempotent).

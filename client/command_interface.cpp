@@ -48,9 +48,19 @@ void handle_upload(const std::vector<std::string>& args) {
     }
 }
 
-void handle_download(const std::vector<std::string>& args){
-	(void)args;
-	std::cout << "handle download \n";
+void handle_download(const std::vector<std::string>& args) {
+    if (args.empty()) {
+        std::cout << "Usage: download <filename>\n";
+        return;
+    }
+
+    const std::string& filename = args[0];
+    std::cout << "Downloading file: " << filename << "\n";
+
+    std::string result = download_from_sync_dir(filename);
+    if (result.empty()) {
+        std::cout << "Falha no download.\n";
+    }
 }
 
 void handle_list_server(const std::vector<std::string>& args){
