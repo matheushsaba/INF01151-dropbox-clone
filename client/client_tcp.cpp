@@ -96,43 +96,44 @@ void send_file(const std::string& file_path) {
         return;
     }
 
-    std::cout << "Iniciando upload do arquivo: " << file_path << std::endl;
-
-    Packet pkt{};
-    pkt.type = PACKET_TYPE_CMD;
-    pkt.seqn = 1;
-
-
     std::string filename = file_path.substr(file_path.find_last_of("/\\") + 1);
+    std::string header = "putfile|" + username + "|" + filename;
 
-    pkt.length = filename.size();
-    std::memcpy(pkt.payload, filename.c_str(), pkt.length);
+    // Send header packet first
+    Packet header_pkt{};
+    header_pkt.type = PACKET_TYPE_CMD;
+    header_pkt.seqn = 0;
+    header_pkt.length = std::min((int)header.size(), MAX_PAYLOAD_SIZE);
+    std::memcpy(header_pkt.payload, header.c_str(), header_pkt.length);
 
-    if (!send_packet(file_socket, pkt)) {
-        std::cerr << "Erro ao enviar o nome do arquivo\n";
+    if (!send_packet(file_socket, header_pkt)) {
+        std::cerr << "Erro ao enviar cabeçalho do upload\n";
         return;
     }
 
+    std::cout << "Enviando arquivo '" << filename << "' como usuário '" << username << "'\n";
+
     char buffer[MAX_PAYLOAD_SIZE];
-    int seqn = 2;
+    int seqn = 1;
+    Packet data_pkt{};
 
     while (file.read(buffer, MAX_PAYLOAD_SIZE) || file.gcount() > 0) {
-        pkt.type = PACKET_TYPE_DATA;
-        pkt.seqn = seqn++;
-        pkt.length = file.gcount();
-        std::memcpy(pkt.payload, buffer, pkt.length);
+        data_pkt.type = PACKET_TYPE_DATA;
+        data_pkt.seqn = seqn++;
+        data_pkt.length = file.gcount();
+        std::memcpy(data_pkt.payload, buffer, data_pkt.length);
 
-        if (!send_packet(file_socket, pkt)) {
+        if (!send_packet(file_socket, data_pkt)) {
             std::cerr << "Erro ao enviar pacote de dados\n";
             break;
         }
     }
 
-    // send packet with lenght 0 to indicate the end of the upload
-    pkt.type = PACKET_TYPE_DATA;
-    pkt.seqn = seqn;
-    pkt.length = 0;
-    send_packet(file_socket, pkt); // end of file
+    // End-of-file marker
+    data_pkt.type = PACKET_TYPE_DATA;
+    data_pkt.seqn = seqn;
+    data_pkt.length = 0;
+    send_packet(file_socket, data_pkt);
 
     std::cout << "Upload concluído com sucesso.\n";
 }
