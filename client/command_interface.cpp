@@ -33,28 +33,56 @@ void handle_help(const std::vector<std::string>&) {
     print_menu();
 }
 
-void handle_upload(const std::vector<std::string>& args){
+void handle_upload(const std::vector<std::string>& args) {
     if (args.empty()) {
         std::cout << "Usage: upload <filename>\n";
         return;
     }
+
     const std::string& path = args[0];
     std::cout << "Uploading file: " << path << "\n";
-    send_file_function(path);
+
+    std::string sync_path = move_file_to_sync_dir(path);
+    if (!sync_path.empty()) {
+        send_file_function(sync_path); // Upload from sync_dir
+    }
 }
 
-void handle_download(const std::vector<std::string>& args){
-	(void)args;
-	std::cout << "handle download \n";
+void handle_download(const std::vector<std::string>& args) {
+    if (args.empty()) {
+        std::cout << "Usage: download <filename>\n";
+        return;
+    }
+
+    const std::string& filename = args[0];
+    std::cout << "Downloading file: " << filename << "\n";
+
+    std::string result = download_from_sync_dir(filename);
+    if (result.empty()) {
+        std::cout << "Falha no download.\n";
+    }
 }
 
 void handle_list_server(const std::vector<std::string>& args){
  
 }
 
-void handle_delete(const std::vector<std::string>& args){
-	(void)args;
-	std::cout << "handle delete \n";
+void handle_list_client(const std::vector<std::string>&) {
+    list_client_sync_dir();
+}
+
+void handle_delete(const std::vector<std::string>& args) {
+    if (args.empty()) {
+        std::cout << "Usage: delete <filename>\n";
+        return;
+    }
+
+    const std::string& filename = args[0];
+    std::cout << "Deletando arquivo: " << filename << "\n";
+
+    if (!delete_from_sync_dir(filename)) {
+        std::cout << "Falha ao deletar o arquivo.\n";
+    }
 }
 
 void handle_exit(const std::vector<std::string>& args){
@@ -70,7 +98,8 @@ void print_options () {
 	std::cout << "# download <filename.ext> \n"; //unsyncronized copy (download) of the file to local directory
 	std::cout << "# delete <filename.ext> \n"; //delete the file from sync_dir
 	std::cout << "# list_server \n"; //list all user files in the server
-	//list_client and get_sync_dir: commands executed in the server
+	std::cout << "# list_client \n"; //list all user files in the client
+	//get_sync_dir: command executed in the server
 	std::cout << "# exit \n"; // close section with the server
 }
 
@@ -86,6 +115,7 @@ void process_command(const std::string& user_input){
 		{"download", handle_download},
 		{"delete", handle_delete},
 		{"list_server", handle_list_server},
+		{"list_client", handle_list_client},
 		{"exit", handle_exit},
         {"help", handle_help},
 	};

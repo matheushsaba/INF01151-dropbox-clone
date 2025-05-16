@@ -20,6 +20,21 @@ constexpr int WATCHER_PORT = 4001;
 constexpr int FILE_PORT = 4002;
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 
+std::string get_sync_dir(const std::string& username) {
+    namespace fs = std::filesystem;
+
+    fs::path sync_path = fs::path("server_storage") / ("sync_dir_" + username);
+
+    std::error_code ec;
+    fs::create_directories(sync_path, ec);  // idempotent
+    if (ec) {
+        std::cerr << "Erro ao criar diretório de sincronização para " << username
+                  << ": " << ec.message() << '\n';
+    }
+
+    return fs::absolute(sync_path).string();
+}
+
 // Function to deal with simple command messages
 void handle_command_client(int client_socket) {
     Packet pkt;
@@ -47,7 +62,7 @@ void handle_command_client(int client_socket) {
                 username = command.substr(pos + 1);
             }
 
-            std::string user_dir = "server_storage/" + username;
+            std::string user_dir = get_sync_dir(username);
             std::string response_data;
 
             if (std::filesystem::exists(user_dir)) {
@@ -96,41 +111,60 @@ void handle_watcher_client(int client_socket) {
     close(client_socket);
 }
 
-// Deals with file transfer logic (upload)
 void handle_file_client(int client_socket) {
-    // Receber o nome do arquivo (primeiro pacote)
     Packet pkt;
+
+    // Step 1: Receive initial header packet
     if (!recv_packet(client_socket, pkt)) {
-        std::cerr << "Erro ao receber nome do arquivo.\n";
+        std::cerr << "Erro ao receber cabeçalho de upload.\n";
         close(client_socket);
         return;
     }
 
-    std::string filename(pkt.payload, pkt.length);
-    std::cout << "Recebendo arquivo: " << filename << std::endl;
+    std::string header(pkt.payload, pkt.length);
+    std::string username, filename;
 
-    // Abrir arquivo no servidor para salvar os dados
-    std::ofstream out_file("server_storage/" + filename, std::ios::binary);
+    // Expected format: putfile|<username>|<filename>
+    if (header.rfind("putfile|", 0) == 0) {
+        size_t first = header.find('|');
+        size_t second = header.find('|', first + 1);
+        if (first != std::string::npos && second != std::string::npos) {
+            username = header.substr(first + 1, second - first - 1);
+            filename = header.substr(second + 1);
+        } else {
+            std::cerr << "Cabeçalho malformado: " << header << '\n';
+            close(client_socket);
+            return;
+        }
+    } else {
+        std::cerr << "Comando inválido recebido no upload: " << header << '\n';
+        close(client_socket);
+        return;
+    }
+
+    // Step 2: Resolve and open the correct path
+    std::string full_path = get_sync_dir(username) + "/" + filename;
+    std::ofstream out_file(full_path, std::ios::binary);
     if (!out_file.is_open()) {
-        std::cerr << "Erro ao criar arquivo para o upload.\n";
+        std::cerr << "Erro ao criar arquivo: " << full_path << '\n';
         close(client_socket);
         return;
     }
 
-    // Loop para receber pacotes de dados e escrever no arquivo
+    std::cout << "Salvando arquivo '" << filename << "' para usuário '" << username << "' em " << full_path << '\n';
+
+    // Step 3: Receive data packets
     while (true) {
         if (!recv_packet(client_socket, pkt)) {
             std::cerr << "Erro ao receber pacote de dados.\n";
             break;
         }
 
-        // Se o pacote for vazio (length == 0), significa que o upload terminou
         if (pkt.length == 0) {
             std::cout << "Upload concluído.\n";
             break;
         }
 
-        // Escrever o conteúdo do pacote no arquivo
         out_file.write(pkt.payload, pkt.length);
         if (!out_file) {
             std::cerr << "Erro ao escrever dados no arquivo.\n";
@@ -140,7 +174,6 @@ void handle_file_client(int client_socket) {
         std::cout << "Recebido pacote: seqn " << pkt.seqn << " com " << pkt.length << " bytes.\n";
     }
 
-    // Fechar o arquivo e a conexão
     out_file.close();
     close(client_socket);
 }
