@@ -183,6 +183,27 @@ std::string download_from_sync_dir(const std::string& filename) {
     return target_path.string();
 }
 
+bool delete_from_sync_dir(const std::string& filename) {
+    namespace fs = std::filesystem;
+
+    fs::path target_path = fs::path(get_sync_dir()) / filename;
+
+    if (!fs::exists(target_path)) {
+        std::cerr << "Arquivo não encontrado no diretório de sincronização: " << target_path << '\n';
+        return false;
+    }
+
+    std::error_code ec;
+    fs::remove(target_path, ec);
+    if (ec) {
+        std::cerr << "Erro ao deletar o arquivo: " << ec.message() << '\n';
+        return false;
+    }
+
+    std::cout << "Arquivo removido: " << target_path << '\n';
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Returns an **absolute** path to client_storage/sync_dir_<username>
 // and guarantees that the directory exists (idempotent).

@@ -67,9 +67,18 @@ void handle_list_server(const std::vector<std::string>& args){
  
 }
 
-void handle_delete(const std::vector<std::string>& args){
-	(void)args;
-	std::cout << "handle delete \n";
+void handle_delete(const std::vector<std::string>& args) {
+    if (args.empty()) {
+        std::cout << "Usage: delete <filename>\n";
+        return;
+    }
+
+    const std::string& filename = args[0];
+    std::cout << "Deletando arquivo: " << filename << "\n";
+
+    if (!delete_from_sync_dir(filename)) {
+        std::cout << "Falha ao deletar o arquivo.\n";
+    }
 }
 
 void handle_exit(const std::vector<std::string>& args){

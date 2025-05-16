@@ -4,6 +4,7 @@
 
 std::string move_file_to_sync_dir(const std::string& source_path);
 std::string download_from_sync_dir(const std::string& filename);
+bool delete_from_sync_dir(const std::string& filename);
 
 void init_command_callbacks(
     std::function<void(const std::string&)> send_command_cb,
