@@ -59,21 +59,54 @@ void connect_to_port(int& socket_fd, int port) {
     }
 }
 
+// void send_command(const std::string& cmd) {
+//     ssize_t bytes_written = write(command_socket, cmd.c_str(), cmd.length()); // Write - Flowchart slide 16 Aula-11
+//     if (bytes_written < 0) {
+//         perror("ERROR writing to command socket");
+//         return;
+//     }
+
+//     char buffer[256]{}; // Reads at most 256 bytes
+//     ssize_t bytes_read = read(command_socket, buffer, 255); // Read - Flowchart slide 16 Aula-11
+//     if (bytes_read < 0) {
+//         perror("ERROR reading from command socket");
+//         return;
+//     }
+
+//     std::cout << "Server response: " << buffer << std::endl; // Prints the response
+// }
+
 void send_command(const std::string& cmd) {
-    ssize_t bytes_written = write(command_socket, cmd.c_str(), cmd.length()); // Write - Flowchart slide 16 Aula-11
-    if (bytes_written < 0) {
-        perror("ERROR writing to command socket");
-        return;
+    /* wrap the text in a Packet so it matches the server’s expectation */
+    Packet pkt{};
+    pkt.type  = PACKET_TYPE_CMD;
+    pkt.seqn  = 0;
+    pkt.total_size = 0;
+    pkt.length = std::min<int>(cmd.size(), MAX_PAYLOAD_SIZE);
+    std::memcpy(pkt.payload, cmd.c_str(), pkt.length);
+
+    if (!send_packet(command_socket, pkt)) {
+        perror("ERROR sending command packet"); return;
     }
 
-    char buffer[256]{}; // Reads at most 256 bytes
-    ssize_t bytes_read = read(command_socket, buffer, 255); // Read - Flowchart slide 16 Aula-11
-    if (bytes_read < 0) {
-        perror("ERROR reading from command socket");
-        return;
+    Packet resp{};
+    if (!recv_packet(command_socket, resp)) {
+        perror("ERROR receiving command response"); return;
     }
+    std::cout << "Server response: "
+              << std::string(resp.payload, resp.length) << '\n';
+}
 
-    std::cout << "Server response: " << buffer << std::endl; // Prints the response
+void send_exit_command() {
+    std::string cmd = "exit|" + username;          // tiny handshake
+    Packet pkt{};
+    pkt.type  = PACKET_TYPE_CMD;
+    pkt.seqn  = 0;
+    pkt.total_size = 0;
+    pkt.length = std::min<int>(cmd.size(), MAX_PAYLOAD_SIZE);
+    std::memcpy(pkt.payload, cmd.c_str(), pkt.length);
+    /* ignore ACK – we’re quitting anyway */
+    send_packet(command_socket, pkt);
 }
 
 void start_watcher() {
@@ -266,9 +299,20 @@ std::string get_sync_dir()
     return fs::absolute(sync_dir).string();
 }
 
-void cleanup_sockets() {
+// void cleanup_sockets() {
+//     close(command_socket);
+//     close(watcher_socket);
+//     close(file_socket);
+// }
+
+void cleanup_sockets() {            // friendlier shutdown
+    shutdown(command_socket, SHUT_RDWR);
     close(command_socket);
+
+    shutdown(watcher_socket, SHUT_RDWR);
     close(watcher_socket);
+    
+    shutdown(file_socket,  SHUT_RDWR);
     close(file_socket);
 }
 
@@ -302,6 +346,7 @@ int main(int argc, char* argv[]) {
         std::getline(std::cin, input);
 
         if (input == "exit") {
+            send_exit_command();   // <-- notify the server
             break;
         } else {
             // Handle regular command

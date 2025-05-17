@@ -39,7 +39,7 @@ std::string get_sync_dir(const std::string& username) {
 void handle_command_client(int client_socket) {
     Packet pkt;
 
- if (!recv_packet(client_socket, pkt)) {
+    if (!recv_packet(client_socket, pkt)) {
         std::cerr << "Erro ao receber pacote de comando.\n";
         close(client_socket);
         return;
@@ -47,7 +47,7 @@ void handle_command_client(int client_socket) {
     std::string command(pkt.payload, pkt.length);
     std::cout << "Command received: " << command << std::endl;
 
-  Packet response;
+    Packet response;
     response.type = PACKET_TYPE_ACK;
     response.seqn = pkt.seqn;
     response.total_size = 0;
@@ -74,6 +74,10 @@ void handle_command_client(int client_socket) {
                 if (response_data.empty()) {
                     response_data = "(nenhum arquivo encontrado)";
                 }
+            } else if (command.rfind("exit", 0) == 0) {      // NEW
+                const char* reply = "Sessão encerrada.";      // ACK
+                response.length = strlen(reply);
+                std::memcpy(response.payload, reply, response.length);
             } else {
                 response_data = "(diretório do usuário não encontrado)";
             }
