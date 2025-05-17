@@ -10,6 +10,8 @@
 static std::function<void(const std::string&)> send_command_function;
 static std::function<void(const std::string&)> send_file_function;
 
+extern std::string username;
+
 void init_command_callbacks(
     std::function<void(const std::string&)> send_command_cb,
     std::function<void(const std::string&)> send_file_cb
@@ -64,7 +66,9 @@ void handle_download(const std::vector<std::string>& args) {
 }
 
 void handle_list_server(const std::vector<std::string>& args){
- 
+    // Format:  list_server|<username>
+    std::string cmd = "list_server|" + username;
+    send_command_function(cmd);       // prints the server’s response verbatim
 }
 
 void handle_list_client(const std::vector<std::string>&) {

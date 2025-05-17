@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include "../common/packet.h" 
 #include <fstream>  // Para std::ofstream
+#include <sys/stat.h>     // stat() for MAC times
 
 
 // constexpr int PORT = 4000;
@@ -70,9 +71,24 @@ void handle_command_client(int client_socket) {
                     if (std::filesystem::is_regular_file(entry)) {
                         response_data += entry.path().filename().string() + "\n";
                     }
+                for (const auto& entry : std::filesystem::directory_iterator(user_dir)) {
+                        if (!std::filesystem::is_regular_file(entry)) continue;
+    
+                        struct stat st;
+                        if (stat(entry.path().c_str(), &st) != 0) continue;
+    
+                        response_data += "Nome: " + entry.path().filename().string() + "\n";
+                        response_data += "  Acesso (atime):    " +
+                                            std::string(std::asctime(std::localtime(&st.st_atime)));
+                        response_data += "  Modificado (mtime): " +
+                                            std::string(std::asctime(std::localtime(&st.st_mtime)));
+                        response_data += "  Criado (ctime):     " +
+                                            std::string(std::asctime(std::localtime(&st.st_ctime)));
+                        response_data += "-------------------------------------------------------------\n";
+                    }
                 }
                 if (response_data.empty()) {
-                    response_data = "(nenhum arquivo encontrado)";
+                response_data = "(nenhum arquivo encontrado)";
                 }
             } else if (command.rfind("exit", 0) == 0) {      // NEW
                 const char* reply = "Sessão encerrada.";      // ACK

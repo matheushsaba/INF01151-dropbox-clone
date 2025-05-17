@@ -6,7 +6,7 @@ bin/
 build/
 
 # Example file you don’t want tracked
-exemplo.txt
+*.txt
 
 # Local server-side data
 server_storage/
