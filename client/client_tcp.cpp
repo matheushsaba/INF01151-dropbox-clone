@@ -14,6 +14,10 @@
 #include <sys/stat.h>
 #include "../common/common.hpp"
 
+extern void connect_to_port(int& socket_fd, int port);
+extern int file_socket;
+extern std::string hostname;
+
 // constexpr int PORT = 4000;
 
 constexpr int COMMAND_PORT = 4000;
@@ -263,7 +267,7 @@ int main(int argc, char* argv[]) {
 
     connect_to_port(command_socket, COMMAND_PORT);
     connect_to_port(watcher_socket, WATCHER_PORT);
-    connect_to_port(file_socket, FILE_PORT);
+    // connect_to_port(file_socket, FILE_PORT);
 
     start_watcher(); // Start the watcher thread
 

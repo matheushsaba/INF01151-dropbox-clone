@@ -73,9 +73,5 @@ run_server: $(SERVER_BIN) killports
 #  House-keeping
 # ---------------------------------------------------------------------------
 clean:
-	@echo "🧹  Cleaning build artefacts…"
-	$(RM) -r $(BUILD_DIR) $(BINDIR)
-
-clean_all: clean
-	@echo "🧹  Cleaning storage dirs…"
-	$(RM) -r $(STORAGEDIRS)
+	@echo "🧹  Cleaning build artefacts and storage files…"
+	$(RM) -r $(BUILD_DIR) $(BINDIR) $(STORAGEDIRS)
