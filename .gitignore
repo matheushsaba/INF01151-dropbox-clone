@@ -3,6 +3,7 @@
 
 # Compiled binaries or other executables
 bin/
+build/
 
 # Example file you don’t want tracked
 exemplo.txt
