@@ -9,3 +9,6 @@ exemplo.txt
 
 # Local server-side data
 server_storage/
+
+# Local client-side data
+client_storage/
