@@ -10,6 +10,8 @@
 #include <sys/socket.h>
 #include "../common/packet.h" 
 #include <fstream>  // Para std::ofstream
+#include <sys/stat.h>     // stat() for MAC times
+#include "../common/common.hpp"
 
 
 // constexpr int PORT = 4000;
@@ -39,7 +41,7 @@ std::string get_sync_dir(const std::string& username) {
 void handle_command_client(int client_socket) {
     Packet pkt;
 
- if (!recv_packet(client_socket, pkt)) {
+    if (!recv_packet(client_socket, pkt)) {
         std::cerr << "Erro ao receber pacote de comando.\n";
         close(client_socket);
         return;
@@ -47,7 +49,7 @@ void handle_command_client(int client_socket) {
     std::string command(pkt.payload, pkt.length);
     std::cout << "Command received: " << command << std::endl;
 
-  Packet response;
+    Packet response;
     response.type = PACKET_TYPE_ACK;
     response.seqn = pkt.seqn;
     response.total_size = 0;
@@ -63,20 +65,7 @@ void handle_command_client(int client_socket) {
             }
 
             std::string user_dir = get_sync_dir(username);
-            std::string response_data;
-
-            if (std::filesystem::exists(user_dir)) {
-                for (const auto& entry : std::filesystem::directory_iterator(user_dir)) {
-                    if (std::filesystem::is_regular_file(entry)) {
-                        response_data += entry.path().filename().string() + "\n";
-                    }
-                }
-                if (response_data.empty()) {
-                    response_data = "(nenhum arquivo encontrado)";
-                }
-            } else {
-                response_data = "(diretório do usuário não encontrado)";
-            }
+            std::string response_data = common::list_files_with_mac(get_sync_dir(username));
 
             response.length = std::min((int)response_data.size(), MAX_PAYLOAD_SIZE);
             std::memcpy(response.payload, response_data.c_str(), response.length);
@@ -111,70 +100,74 @@ void handle_watcher_client(int client_socket) {
     close(client_socket);
 }
 
-void handle_file_client(int client_socket) {
+void handle_file_client(int client_socket)
+{
     Packet pkt;
 
-    // Step 1: Receive initial header packet
-    if (!recv_packet(client_socket, pkt)) {
-        std::cerr << "Erro ao receber cabeçalho de upload.\n";
-        close(client_socket);
-        return;
-    }
+    while (true) {                               // ❶ laço externo = 1-conexão / N-arquivos
+        /* ---------- 1. Cabeçalho “putfile|<user>|<fname>” ---------- */
+        if (!recv_packet(client_socket, pkt)) {          // EOF ou erro → fecha conexão
+            std::cerr << "Conexão encerrada pelo cliente.\n";
+            break;
+        }
+        if (pkt.type != PACKET_TYPE_CMD) {               // protocolo inesperado
+            std::cerr << "Tipo de pacote inválido.\n";
+            break;
+        }
 
-    std::string header(pkt.payload, pkt.length);
-    std::string username, filename;
+        std::string header(pkt.payload, pkt.length);
+        if (header.rfind("putfile|", 0) != 0) {          // qualquer outro comando → encerra
+            std::cerr << "Comando desconhecido: " << header << '\n';
+            break;
+        }
 
-    // Expected format: putfile|<username>|<filename>
-    if (header.rfind("putfile|", 0) == 0) {
-        size_t first = header.find('|');
-        size_t second = header.find('|', first + 1);
-        if (first != std::string::npos && second != std::string::npos) {
-            username = header.substr(first + 1, second - first - 1);
-            filename = header.substr(second + 1);
-        } else {
+        /* Extrai user e filename */
+        size_t p1 = header.find('|');
+        size_t p2 = header.find('|', p1 + 1);
+        if (p1 == std::string::npos || p2 == std::string::npos) {
             std::cerr << "Cabeçalho malformado: " << header << '\n';
-            close(client_socket);
-            return;
-        }
-    } else {
-        std::cerr << "Comando inválido recebido no upload: " << header << '\n';
-        close(client_socket);
-        return;
-    }
-
-    // Step 2: Resolve and open the correct path
-    std::string full_path = get_sync_dir(username) + "/" + filename;
-    std::ofstream out_file(full_path, std::ios::binary);
-    if (!out_file.is_open()) {
-        std::cerr << "Erro ao criar arquivo: " << full_path << '\n';
-        close(client_socket);
-        return;
-    }
-
-    std::cout << "Salvando arquivo '" << filename << "' para usuário '" << username << "' em " << full_path << '\n';
-
-    // Step 3: Receive data packets
-    while (true) {
-        if (!recv_packet(client_socket, pkt)) {
-            std::cerr << "Erro ao receber pacote de dados.\n";
             break;
         }
+        std::string username = header.substr(p1 + 1, p2 - p1 - 1);
+        std::string filename = header.substr(p2 + 1);
 
-        if (pkt.length == 0) {
-            std::cout << "Upload concluído.\n";
-            break;
-        }
+        /* ---------- 2. Abre destino seguro ---------- */
+        std::string full_path = get_sync_dir(username) + "/" + filename;
+        {
+            std::lock_guard<std::mutex> lock(file_mutex);   // protege criação do dir/arquivo
+            std::ofstream out(full_path, std::ios::binary);
+            if (!out.is_open()) {
+                std::cerr << "Não foi possível criar " << full_path << '\n';
+                break;
+            }
 
-        out_file.write(pkt.payload, pkt.length);
-        if (!out_file) {
-            std::cerr << "Erro ao escrever dados no arquivo.\n";
-            break;
-        }
+            std::cout << "[UPLOAD] " << username << '/' << filename << '\n';
 
-        std::cout << "Recebido pacote: seqn " << pkt.seqn << " com " << pkt.length << " bytes.\n";
+            /* ---------- 3. Blocos DATA até length==0 ---------- */
+            while (true) {
+                if (!recv_packet(client_socket, pkt)) {      // drop inesperado
+                    std::cerr << "Conexão perdida durante upload.\n";
+                    goto close_connection;                        // sai do dois níveis
+                }
+                if (pkt.type != PACKET_TYPE_DATA) {
+                    std::cerr << "Esperava DATA, recebi outro tipo.\n";
+                    goto close_connection;
+                }
+                if (pkt.length == 0) {                       // marcador EOF
+                    std::cout << "Upload concluído (" << filename << ").\n";
+                    break;                                   // volta ao laço externo p/ próximo arquivo
+                }
+                out.write(pkt.payload, pkt.length);
+                if (!out) {
+                    std::cerr << "Erro de escrita em disco.\n";
+                    goto close_connection;
+                }
+            }
+        }   // mutex liberado aqui — permite outros uploads em paralelo
+        continue;                                           // pronto p/ novo cabeçalho
     }
 
-    out_file.close();
+close_connection:
     close(client_socket);
 }
 
@@ -225,6 +218,8 @@ void start_server_socket(int port, void (*handler)(int)) {
 }
 
 int main() {
+    std::cout << std::unitbuf;             // C++-way: flush after each insertion
+    
     // Start one server socket per function on different ports
     std::thread command_thread(start_server_socket, COMMAND_PORT, handle_command_client);
     std::thread watcher_thread(start_server_socket, WATCHER_PORT, handle_watcher_client);

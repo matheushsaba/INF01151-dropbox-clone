@@ -5,10 +5,15 @@
 #include <functional>
 #include <vector>
 #include "command_interface.hpp"
+#include <unistd.h>         // for close(), shutdown()
+#include <sys/socket.h>     // for SHUT_RDWR
 
 //pointers to the client functions, initialized by init_command_callbacks
 static std::function<void(const std::string&)> send_command_function;
 static std::function<void(const std::string&)> send_file_function;
+
+extern std::string username;
+extern void connect_to_port(int& socket_fd, int port);
 
 void init_command_callbacks(
     std::function<void(const std::string&)> send_command_cb,
@@ -33,6 +38,21 @@ void handle_help(const std::vector<std::string>&) {
     print_menu();
 }
 
+// void handle_upload(const std::vector<std::string>& args) {
+//     if (args.empty()) {
+//         std::cout << "Usage: upload <filename>\n";
+//         return;
+//     }
+
+//     const std::string& path = args[0];
+//     std::cout << "Uploading file: " << path << "\n";
+
+//     std::string sync_path = move_file_to_sync_dir(path);
+//     if (!sync_path.empty()) {
+//         send_file_function(sync_path); // Upload from sync_dir
+//     }
+// }
+
 void handle_upload(const std::vector<std::string>& args) {
     if (args.empty()) {
         std::cout << "Usage: upload <filename>\n";
@@ -43,9 +63,25 @@ void handle_upload(const std::vector<std::string>& args) {
     std::cout << "Uploading file: " << path << "\n";
 
     std::string sync_path = move_file_to_sync_dir(path);
-    if (!sync_path.empty()) {
-        send_file_function(sync_path); // Upload from sync_dir
+    if (sync_path.empty()) {
+        std::cerr << "Falha ao mover o arquivo para o diretório de sincronização.\n";
+        return;
     }
+
+    // Reconnect to the file transfer port (4002) before each upload
+    extern std::string hostname;
+    extern int file_socket;
+    constexpr int FILE_PORT = 4002;
+
+    // Create a fresh connection for the upload
+    connect_to_port(file_socket, FILE_PORT);
+
+    // Upload from sync_dir
+    send_file_function(sync_path);
+
+    // Gracefully close the file socket to notify the server that upload is finished
+    shutdown(file_socket, SHUT_RDWR);
+    close(file_socket);
 }
 
 void handle_download(const std::vector<std::string>& args) {
@@ -64,7 +100,9 @@ void handle_download(const std::vector<std::string>& args) {
 }
 
 void handle_list_server(const std::vector<std::string>& args){
- 
+    // Format:  list_server|<username>
+    std::string cmd = "list_server|" + username;
+    send_command_function(cmd);       // prints the server’s response verbatim
 }
 
 void handle_list_client(const std::vector<std::string>&) {
