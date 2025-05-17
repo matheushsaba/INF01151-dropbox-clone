@@ -13,3 +13,6 @@ server_storage/
 
 # Local client-side data
 client_storage/
+
+# Folder structure data
+folder_structure.txt
