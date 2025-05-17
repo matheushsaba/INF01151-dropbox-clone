@@ -3,9 +3,16 @@
 
 # Compiled binaries or other executables
 bin/
+build/
 
 # Example file you don’t want tracked
-exemplo.txt
+*.txt
 
 # Local server-side data
 server_storage/
+
+# Local client-side data
+client_storage/
+
+# Folder structure data
+folder_structure.txt

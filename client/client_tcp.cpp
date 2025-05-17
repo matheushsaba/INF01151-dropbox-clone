@@ -12,6 +12,11 @@
 #include "command_interface.hpp"
 #include "../common/packet.h"
 #include <sys/stat.h>
+#include "../common/common.hpp"
+
+extern void connect_to_port(int& socket_fd, int port);
+extern int file_socket;
+extern std::string hostname;
 
 // constexpr int PORT = 4000;
 
@@ -60,20 +65,36 @@ void connect_to_port(int& socket_fd, int port) {
 }
 
 void send_command(const std::string& cmd) {
-    ssize_t bytes_written = write(command_socket, cmd.c_str(), cmd.length()); // Write - Flowchart slide 16 Aula-11
-    if (bytes_written < 0) {
-        perror("ERROR writing to command socket");
-        return;
+    /* wrap the text in a Packet so it matches the server’s expectation */
+    Packet pkt{};
+    pkt.type  = PACKET_TYPE_CMD;
+    pkt.seqn  = 0;
+    pkt.total_size = 0;
+    pkt.length = std::min<int>(cmd.size(), MAX_PAYLOAD_SIZE);
+    std::memcpy(pkt.payload, cmd.c_str(), pkt.length);
+
+    if (!send_packet(command_socket, pkt)) {
+        perror("ERROR sending command packet"); return;
     }
 
-    char buffer[256]{}; // Reads at most 256 bytes
-    ssize_t bytes_read = read(command_socket, buffer, 255); // Read - Flowchart slide 16 Aula-11
-    if (bytes_read < 0) {
-        perror("ERROR reading from command socket");
-        return;
+    Packet resp{};
+    if (!recv_packet(command_socket, resp)) {
+        perror("ERROR receiving command response"); return;
     }
+    std::cout << "Server response: "
+              << std::string(resp.payload, resp.length) << '\n';
+}
 
-    std::cout << "Server response: " << buffer << std::endl; // Prints the response
+void send_exit_command() {
+    std::string cmd = "exit|" + username;          // tiny handshake
+    Packet pkt{};
+    pkt.type  = PACKET_TYPE_CMD;
+    pkt.seqn  = 0;
+    pkt.total_size = 0;
+    pkt.length = std::min<int>(cmd.size(), MAX_PAYLOAD_SIZE);
+    std::memcpy(pkt.payload, cmd.c_str(), pkt.length);
+    /* ignore ACK – we’re quitting anyway */
+    send_packet(command_socket, pkt);
 }
 
 void start_watcher() {
@@ -206,69 +227,26 @@ bool delete_from_sync_dir(const std::string& filename) {
     return true;
 }
 
-void list_client_sync_dir() {
-    namespace fs = std::filesystem;
-
-    fs::path sync_dir = get_sync_dir();
-
-    std::cout << "\nArquivos no diretório de sincronização de " << username << ":\n";
-    std::cout << "-------------------------------------------------------------\n";
-
-    for (const auto& entry : fs::directory_iterator(sync_dir)) {
-        if (!entry.is_regular_file()) continue;
-
-        const auto& path = entry.path();
-        std::string filename = path.filename().string();
-
-        std::error_code ec;
-        auto ftime = fs::last_write_time(path, ec);
-        auto s = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-            ftime - fs::file_time_type::clock::now()
-            + std::chrono::system_clock::now()
-        );
-
-        struct stat stat_buf;
-        if (stat(path.c_str(), &stat_buf) != 0) {
-            perror("stat");
-            continue;
-        }
-
-        std::cout << "Nome: " << filename << '\n';
-        std::cout << "  Acesso (atime):    " << std::asctime(std::localtime(&stat_buf.st_atime));
-        std::cout << "  Modificado (mtime): " << std::asctime(std::localtime(&stat_buf.st_mtime));
-        std::cout << "  Criado (ctime):     " << std::asctime(std::localtime(&stat_buf.st_ctime));
-        std::cout << "-------------------------------------------------------------\n";
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Returns an **absolute** path to client_storage/sync_dir_<username>
-// and guarantees that the directory exists (idempotent).
-// If the same username is reused, the same directory is returned.
-// ---------------------------------------------------------------------------
 std::string get_sync_dir()
 {
-    namespace fs = std::filesystem;
-
-    if (username.empty()) {
-        throw std::runtime_error("get_sync_dir() called before username is set");
-    }
-
-    fs::path sync_dir = fs::path{"client_storage"} / ("sync_dir_" + username);
-
-    std::error_code ec;
-    fs::create_directories(sync_dir, ec); // creates intermediate dirs too
-    if (ec) {
-        std::cerr << "Warning: could not create " << sync_dir
-                  << " (" << ec.message() << ")\n";
-    }
-
-    return fs::absolute(sync_dir).string();
+    static std::string cached =
+        common::ensure_sync_dir("client_storage", username);
+    return cached;
 }
 
-void cleanup_sockets() {
+void list_client_sync_dir()
+{
+    std::cout << '\n' << common::list_files_with_mac(get_sync_dir());
+}
+
+void cleanup_sockets() {            // friendlier shutdown
+    shutdown(command_socket, SHUT_RDWR);
     close(command_socket);
+
+    shutdown(watcher_socket, SHUT_RDWR);
     close(watcher_socket);
+    
+    shutdown(file_socket,  SHUT_RDWR);
     close(file_socket);
 }
 
@@ -289,7 +267,7 @@ int main(int argc, char* argv[]) {
 
     connect_to_port(command_socket, COMMAND_PORT);
     connect_to_port(watcher_socket, WATCHER_PORT);
-    connect_to_port(file_socket, FILE_PORT);
+    // connect_to_port(file_socket, FILE_PORT);
 
     start_watcher(); // Start the watcher thread
 
@@ -302,6 +280,7 @@ int main(int argc, char* argv[]) {
         std::getline(std::cin, input);
 
         if (input == "exit") {
+            send_exit_command();   // <-- notify the server
             break;
         } else {
             // Handle regular command
