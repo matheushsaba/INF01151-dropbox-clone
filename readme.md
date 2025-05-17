@@ -1,134 +1,110 @@
+# 🗂️ Sistema de Sincronização de Arquivos (Servidor + Cliente)
 
-
----
-
-# 🗂️ Sistema de Sincronização de Arquivos (Servidor e Cliente)
-
-Este projeto implementa um sistema de sincronização de arquivos com suporte a **upload**, **download**, **listagem** e **remoção** de arquivos, via **comunicação TCP** entre um cliente e um servidor multithread.
+Este projeto implementa, em **C++17**, um sistema de sincronização de arquivos que oferece **upload**, **download**, **listagem** e **remoção**, usando **TCP** entre um cliente multithread e um servidor multithread.
 
 ---
 
-## 📁 Estrutura do Projeto
+## 📁 Estrutura do Repositório
 
-* `server_dir/`: Código-fonte do **servidor**.
-* `client/`: Código-fonte do **cliente**.
-* `common/`: Arquivos compartilhados (ex: `packet.cpp`, `packet.h`).
-* `bin/`: Binários gerados pelo `make`.
-* `server_storage/`: Diretório onde o servidor armazena os arquivos dos usuários.
-* `client_sync/`: Diretório de sincronização do lado do cliente.
-* `Makefile`: Script de build e configuração.
+| Caminho                        | Descrição                                                   |
+| ------------------------------ | ----------------------------------------------------------- |
+| `client/`                      | Código‑fonte do **cliente**                                 |
+| `server/`                      | Código‑fonte do **servidor**                                |
+| `common/`                      | Módulos compartilhados (ex.: `packet.cpp`, `packet.h`)      |
+| `build/obj/**`                 | Objetos gerados (**fora** da árvore de código)              |
+| `bin/`                         | Executáveis criados pelo `make` (`myClient`, `server_exec`) |
+| `client_storage/`              | Diretório local de sincronização do cliente                 |
+| `server_storage/`              | Diretório onde o servidor guarda os arquivos dos usuários   |
+| `Makefile`                     | Script de build                                             |
+| `INF01151-Trabalho_pt1-v4.pdf` | Descrição formal do trabalho                                |
+
+> ℹ️ Os diretórios `client_storage/` e `server_storage/` são criados/limpos automaticamente pelos alvos `make` e `make clean`.
 
 ---
 
-## 📋 Requisitos
+## 📋 Requisitos
 
-* Sistema Linux ou compatível
-* `g++` com suporte a C++17
+* Linux, WSL2 ou macOS com **GCC >= 10** ou Clang compatível com C++17
 * `make`
 
 ---
 
-## 🛠️ Compilação e Setup
-
-1. **Clone o repositório** (caso ainda não tenha feito):
-
-```bash
-git clone <URL_DO_REPO>
-cd <nome_da_pasta>
-```
-
-2. **Compile e configure os diretórios:**
+## 🛠️ Compilação
 
 ```bash
 make
 ```
 
-Esse comando:
+O alvo padrão:
 
-* Cria diretórios como `bin/`, `server_storage/`, `client_sync/`
-* Cria subpastas para usuários como `testuser`
-* Compila os binários:
+* Cria `bin/`, `build/obj/`, `client_storage/`, `server_storage/` (caso não existam);
+* Compila todos os `.cpp` de `client/`, `server/` e `common/` para `build/obj/…`;
+* Gera:
 
-  * `bin/server_exec` — executável do servidor
-  * `bin/myClient` — executável do cliente
+  * `bin/server_exec` – servidor
+  * `bin/myClient`   – cliente
 
----
+### Limpeza
 
-## 🧹 Limpeza
-
-* Remover apenas os binários:
-
-```bash
-make clean
-```
-
-* Remover **tudo** (binários + diretórios de arquivos):
-
-```bash
-make clean_all
-```
+| Comando          | Ação                                                                                           |
+| ---------------- | ---------------------------------------------------------------------------------------------- |
+| `make clean`     | Remove **executáveis**, **objetos** e todo o conteúdo de `client_storage/` e `server_storage/` |
 
 ---
 
-## ▶️ Execução
+## ▶️ Execução
 
-### 1. Inicie o servidor:
+### 1. Iniciar o servidor
 
 ```bash
 ./bin/server_exec
 ```
 
-O servidor escutará nas seguintes portas:
+Por padrão o servidor escuta as portas:
 
-* `4000` – comandos (ex: list, delete)
-* `4001` – watcher (futuro)
-* `4002` – transferência de arquivos (upload/download)
+| Porta | Propósito                                   |
+| ----: | ------------------------------------------- |
+|  4000 | Comandos (list, delete, etc.)               |
+|  4001 | Watcher (filesystem events – futura)        |
+|  4002 | Transferência de arquivos (upload/download) |
 
----
+### 2. Rodar o cliente
 
-### 2. Execute o cliente:
-
-Em outro terminal:
+Em outro terminal/Wsl tab:
 
 ```bash
+./bin/myClient <usuario> <ip_servidor> 4000
+# Exemplo local:
 ./bin/myClient testuser 127.0.0.1 4000
 ```
 
-**Formato:**
-
-```bash
-./myClient <username> <server_ip> <porta_comandos>
-```
-
-Você verá o menu com os comandos disponíveis.
+Após conectar, o cliente exibe um menu interativo.
 
 ---
 
-## 💬 Comandos do Cliente
+## 💬 Comandos Disponíveis no Cliente
 
-* `upload <caminho_do_arquivo>`: Envia um arquivo ao servidor.
-* `download <nome_do_arquivo>`: (WIP) Baixa um arquivo do servidor.
-* `list_server`: Lista todos os arquivos do usuário no servidor.
-* `delete <nome_do_arquivo>`: (WIP) Remove um arquivo no servidor.
-* `exit`: Fecha a conexão com o servidor.
+| Comando                           | Descrição                             |
+| --------------------------------- | ------------------------------------- |
+| `upload <caminho_arquivo>`        | Envia arquivo ao servidor             |
+| `download <nome_arquivo>`         | Baixa arquivo do servidor             |
+| `list_server`                     | Lista arquivos do usuário no servidor |
+| `delete <nome_arquivo>`           | Remove arquivo do servidor            |
+| `exit`                            | Encerra a conexão                     |
 
 ---
 
-## 🧪 Testando o Upload
-
-1. Crie um arquivo de teste:
+## 🚀 Testando um Upload Rápido
 
 ```bash
-echo "Exemplo de conteúdo" > exemplo.txt
+# 1. Crie um arquivo de teste
+ echo "Exemplo de conteúdo" > exemplo.txt
+
+# 2. No cliente, execute
+ upload exemplo.txt
 ```
 
-2. No cliente, execute:
-
-```bash
-upload exemplo.txt
-```
-
-3. No terminal do servidor, você verá:
+Você deverá ver logs no servidor semelhantes a:
 
 ```
 Recebendo arquivo: exemplo.txt
@@ -136,34 +112,14 @@ Recebido pacote: seqn 1 com X bytes.
 Upload concluído.
 ```
 
-4. O arquivo será salvo em `server_storage/exemplo.txt`.
+O arquivo será salvo em `server_storage/exemplo.txt`.
 
 ---
 
-### 📄 Listando os Arquivos
+## 🔧 Detalhes Internos de Portas
 
-Use:
-
-```bash
-list_server
-```
-
-Saída esperada:
-
-```
-[Arquivos no servidor]
-exemplo.txt
-```
-
----
-
-## 🔧 Estrutura Interna das Portas
-
-| Porta | Função                                      |
-| ----- | ------------------------------------------- |
-| 4000  | Comandos gerais                             |
-| 4001  | Watcher (eventual)                          |
-| 4002  | Transferência de arquivos (upload/download) |
-
----
-
+| Porta | Função                    |
+| ----: | ------------------------- |
+|  4000 | Comandos gerais           |
+|  4001 | Watcher (futuramente)     |
+|  4002 | Transferência de arquivos |

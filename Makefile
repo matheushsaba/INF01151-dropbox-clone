@@ -47,7 +47,8 @@
 CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -pedantic -pthread
 
-OBJDIR   := build/obj
+BUILD_DIR    := build
+OBJDIR       := $(BUILD_DIR)/obj
 BINDIR   := bin
 STORAGEDIRS := client_storage server_storage
 
@@ -99,6 +100,4 @@ $(BINDIR):
 # ---------------------------------------------------------------------------
 clean:
 	@echo "Cleaning build artefacts and storage dirs..."
-	$(RM) -r $(OBJDIR) $(BINDIR) $(STORAGEDIRS)
-
-clean_all: clean
+	$(RM) -r $(BUILD_DIR) $(BINDIR) $(STORAGEDIRS)
