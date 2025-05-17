@@ -21,6 +21,7 @@ constexpr int COMMAND_PORT = 4000;
 constexpr int WATCHER_PORT = 4001;
 constexpr int FILE_PORT = 4002;
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
+std::mutex socket_creation_mutex;
 
 std::string get_sync_dir(const std::string& username) {
     namespace fs = std::filesystem;
@@ -116,7 +117,7 @@ void handle_file_client(int client_socket)
         }
 
         std::string header(pkt.payload, pkt.length);
-        if (header.rfind("putfile|", 0) != 0) {          // qualquer outro comando → encerra
+        if ((header.rfind("putfile|", 0) != 0) && header.rfind("delfile|", 0) != 0) {          // qualquer outro comando → encerra
             std::cerr << "Comando desconhecido: " << header << '\n';
             break;
         }
@@ -133,6 +134,19 @@ void handle_file_client(int client_socket)
 
         /* ---------- 2. Abre destino seguro ---------- */
         std::string full_path = get_sync_dir(username) + "/" + filename;
+        if (header.rfind("delfile|", 0) == 0) {
+            std::lock_guard<std::mutex> lock(file_mutex);
+            if (std::filesystem::exists(full_path)) {
+                if (std::filesystem::remove(full_path)) {
+                    std::cout << "[DELETE] " << username << '/' << filename << " removido.\n";
+                } else {
+                    std::cerr << "Erro ao remover " << full_path << '\n';
+                }
+            } else {
+                std::cerr << "Arquivo para remover não encontrado: " << full_path << '\n';
+            }
+            goto close_connection; 
+        }
         {
             std::lock_guard<std::mutex> lock(file_mutex);   // protege criação do dir/arquivo
             std::ofstream out(full_path, std::ios::binary);
@@ -176,31 +190,34 @@ void start_server_socket(int port, void (*handler)(int)) {
     int server_fd, client_fd;
     sockaddr_in serv_addr{}, cli_addr{};
     socklen_t clilen = sizeof(cli_addr);
+    {
+        std::lock_guard<std::mutex> lock(socket_creation_mutex);
 
-    // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0) {
-        perror("ERROR opening socket");
-        return;
+        // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
+        server_fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (server_fd < 0) {
+            perror("ERROR opening socket");
+            return;
+        }
+
+        // Set server address and port. Slide 20 Aula-11
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_addr.s_addr = INADDR_ANY;
+        serv_addr.sin_port = htons(port); // Ensures correct byte order on the communication. Slide 26 Aula-11
+        memset(&(serv_addr.sin_zero), 0, 8);
+
+        // Bind the socket to the address and port. Slide 18 Aula-11
+        int bind_result = bind(server_fd, reinterpret_cast<sockaddr*>(&serv_addr), sizeof(serv_addr));
+        if (bind_result < 0) {
+            perror("ERROR on binding");
+            return;
+        }
+    
+        // Start listening for incoming connections (backlog = 5, max number of connections)
+        // Slide 21 Aula-11
+        listen(server_fd, 5);
+        std::cout << "Server listening on port " << port << "...\n";
     }
-
-    // Set server address and port. Slide 20 Aula-11
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(port); // Ensures correct byte order on the communication. Slide 26 Aula-11
-    memset(&(serv_addr.sin_zero), 0, 8);
-
-    // Bind the socket to the address and port. Slide 18 Aula-11
-    int bind_result = bind(server_fd, reinterpret_cast<sockaddr*>(&serv_addr), sizeof(serv_addr));
-    if (bind_result < 0) {
-        perror("ERROR on binding");
-        return;
-    }
-
-    // Start listening for incoming connections (backlog = 5, max number of connections)
-    // Slide 21 Aula-11
-    listen(server_fd, 5);
-    std::cout << "Server listening on port " << port << "...\n";
 
     while (true) {
         // Accept client connections. Slide 22 Aula-11

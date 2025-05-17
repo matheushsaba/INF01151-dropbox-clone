@@ -1,4 +1,6 @@
 #include "packet.h"
+#include <iostream>
+#include <string>
 #include <cstring>
 #include <sys/socket.h>
 #include <filesystem>
@@ -43,16 +45,23 @@ bool send_packet(int sockfd, const Packet& pkt) {
 bool recv_packet(int sockfd, Packet& pkt) {
     char header[10];
     int header_size = sizeof(pkt.type) + sizeof(pkt.seqn) + sizeof(pkt.total_size) + sizeof(pkt.length);
-    if (recv(sockfd, header, header_size, MSG_WAITALL) != header_size) return false;
+    if (recv(sockfd, header, header_size, MSG_WAITALL) != header_size) {
+        perror("recv");
+        return false;
+    }
 
     uint16_t length;
     std::memcpy(&length, header + header_size - sizeof(length), sizeof(length));
 
-    if (length > MAX_PAYLOAD_SIZE) return false;
+    if (length > MAX_PAYLOAD_SIZE) {
+        return false;
+    }
 
     char buffer[1500];
     std::memcpy(buffer, header, header_size);
-    if (recv(sockfd, buffer + header_size, length, MSG_WAITALL) != length) return false;
+    if (recv(sockfd, buffer + header_size, length, MSG_WAITALL) != length) {
+        return false;
+    }
 
     return deserialize_packet(buffer, header_size + length, pkt) > 0;
 }
