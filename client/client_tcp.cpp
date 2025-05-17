@@ -12,6 +12,7 @@
 #include "command_interface.hpp"
 #include "../common/packet.h"
 #include <sys/stat.h>
+#include "../common/common.hpp"
 
 // constexpr int PORT = 4000;
 
@@ -58,23 +59,6 @@ void connect_to_port(int& socket_fd, int port) {
         exit(1);
     }
 }
-
-// void send_command(const std::string& cmd) {
-//     ssize_t bytes_written = write(command_socket, cmd.c_str(), cmd.length()); // Write - Flowchart slide 16 Aula-11
-//     if (bytes_written < 0) {
-//         perror("ERROR writing to command socket");
-//         return;
-//     }
-
-//     char buffer[256]{}; // Reads at most 256 bytes
-//     ssize_t bytes_read = read(command_socket, buffer, 255); // Read - Flowchart slide 16 Aula-11
-//     if (bytes_read < 0) {
-//         perror("ERROR reading from command socket");
-//         return;
-//     }
-
-//     std::cout << "Server response: " << buffer << std::endl; // Prints the response
-// }
 
 void send_command(const std::string& cmd) {
     /* wrap the text in a Packet so it matches the server’s expectation */
@@ -239,71 +223,17 @@ bool delete_from_sync_dir(const std::string& filename) {
     return true;
 }
 
-void list_client_sync_dir() {
-    namespace fs = std::filesystem;
-
-    fs::path sync_dir = get_sync_dir();
-
-    std::cout << "\nArquivos no diretório de sincronização de " << username << ":\n";
-    std::cout << "-------------------------------------------------------------\n";
-
-    for (const auto& entry : fs::directory_iterator(sync_dir)) {
-        if (!entry.is_regular_file()) continue;
-
-        const auto& path = entry.path();
-        std::string filename = path.filename().string();
-
-        std::error_code ec;
-        auto ftime = fs::last_write_time(path, ec);
-        auto s = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-            ftime - fs::file_time_type::clock::now()
-            + std::chrono::system_clock::now()
-        );
-
-        struct stat stat_buf;
-        if (stat(path.c_str(), &stat_buf) != 0) {
-            perror("stat");
-            continue;
-        }
-
-        std::cout << "Nome: " << filename << '\n';
-        std::cout << "  Acesso (atime):    " << std::asctime(std::localtime(&stat_buf.st_atime));
-        std::cout << "  Modificado (mtime): " << std::asctime(std::localtime(&stat_buf.st_mtime));
-        std::cout << "  Criado (ctime):     " << std::asctime(std::localtime(&stat_buf.st_ctime));
-        std::cout << "-------------------------------------------------------------\n";
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Returns an **absolute** path to client_storage/sync_dir_<username>
-// and guarantees that the directory exists (idempotent).
-// If the same username is reused, the same directory is returned.
-// ---------------------------------------------------------------------------
 std::string get_sync_dir()
 {
-    namespace fs = std::filesystem;
-
-    if (username.empty()) {
-        throw std::runtime_error("get_sync_dir() called before username is set");
-    }
-
-    fs::path sync_dir = fs::path{"client_storage"} / ("sync_dir_" + username);
-
-    std::error_code ec;
-    fs::create_directories(sync_dir, ec); // creates intermediate dirs too
-    if (ec) {
-        std::cerr << "Warning: could not create " << sync_dir
-                  << " (" << ec.message() << ")\n";
-    }
-
-    return fs::absolute(sync_dir).string();
+    static std::string cached =
+        common::ensure_sync_dir("client_storage", username);
+    return cached;
 }
 
-// void cleanup_sockets() {
-//     close(command_socket);
-//     close(watcher_socket);
-//     close(file_socket);
-// }
+void list_client_sync_dir()
+{
+    std::cout << '\n' << common::list_files_with_mac(get_sync_dir());
+}
 
 void cleanup_sockets() {            // friendlier shutdown
     shutdown(command_socket, SHUT_RDWR);

@@ -11,6 +11,7 @@
 #include "../common/packet.h" 
 #include <fstream>  // Para std::ofstream
 #include <sys/stat.h>     // stat() for MAC times
+#include "../common/common.hpp"
 
 
 // constexpr int PORT = 4000;
@@ -64,39 +65,7 @@ void handle_command_client(int client_socket) {
             }
 
             std::string user_dir = get_sync_dir(username);
-            std::string response_data;
-
-            if (std::filesystem::exists(user_dir)) {
-                for (const auto& entry : std::filesystem::directory_iterator(user_dir)) {
-                    if (std::filesystem::is_regular_file(entry)) {
-                        response_data += entry.path().filename().string() + "\n";
-                    }
-                for (const auto& entry : std::filesystem::directory_iterator(user_dir)) {
-                        if (!std::filesystem::is_regular_file(entry)) continue;
-    
-                        struct stat st;
-                        if (stat(entry.path().c_str(), &st) != 0) continue;
-    
-                        response_data += "Nome: " + entry.path().filename().string() + "\n";
-                        response_data += "  Acesso (atime):    " +
-                                            std::string(std::asctime(std::localtime(&st.st_atime)));
-                        response_data += "  Modificado (mtime): " +
-                                            std::string(std::asctime(std::localtime(&st.st_mtime)));
-                        response_data += "  Criado (ctime):     " +
-                                            std::string(std::asctime(std::localtime(&st.st_ctime)));
-                        response_data += "-------------------------------------------------------------\n";
-                    }
-                }
-                if (response_data.empty()) {
-                response_data = "(nenhum arquivo encontrado)";
-                }
-            } else if (command.rfind("exit", 0) == 0) {      // NEW
-                const char* reply = "Sessão encerrada.";      // ACK
-                response.length = strlen(reply);
-                std::memcpy(response.payload, reply, response.length);
-            } else {
-                response_data = "(diretório do usuário não encontrado)";
-            }
+            std::string response_data = common::list_files_with_mac(get_sync_dir(username));
 
             response.length = std::min((int)response_data.size(), MAX_PAYLOAD_SIZE);
             std::memcpy(response.payload, response_data.c_str(), response.length);
