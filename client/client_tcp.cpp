@@ -336,61 +336,68 @@ int main(int argc, char* argv[]) {
 
     username = argv[1];                  // e.g. "alice"
     hostname = argv[2];                  // e.g. "127.0.0.1"
-    int port = std::stoi(argv[3]);  // e.g. 4000
+    int port = std::stoi(argv[3]);       // e.g. 4000
 
     int session_socket;
     connect_to_port(session_socket, port);
 
-    // Send username
+    // Send handshake packet: "username"
     Packet hello{};
     hello.type = PACKET_TYPE_CMD;
-    hello.length = username.size();
+    hello.length = std::min((int)username.size(), MAX_PAYLOAD_SIZE);
     std::memcpy(hello.payload, username.c_str(), hello.length);
     send_packet(session_socket, hello);
 
-    // Receive new ports
+    // Wait for response
+    Packet reply{};
+    if (!recv_packet(session_socket, reply)) {
+        std::cerr << "❌ Failed to receive response from server.\n";
+        close(session_socket);
+        return 1;
+    }
+
+    std::string response_msg(reply.payload, reply.length);
+    if (response_msg.rfind("DENY", 0) == 0) {
+        std::cerr << "❌ Connection refused: " << response_msg << '\n';
+        close(session_socket);
+        return 1;
+    }
+
+    // Assume OK and expect 3-port info next
     Packet ports_pkt;
-    recv_packet(session_socket, ports_pkt);
-    close(session_socket);
+    if (!recv_packet(session_socket, ports_pkt)) {
+        std::cerr << "❌ Failed to receive port info from server.\n";
+        close(session_socket);
+        return 1;
+    }
 
-    std::string ports_str(ports_pkt.payload, ports_pkt.length);
-    auto sep = ports_str.find('|');
-    int command_port = std::stoi(ports_str.substr(0, sep));
-    int watcher_port = std::stoi(ports_str.substr(sep + 1));
+    close(session_socket);  // We no longer use the initial socket
 
-    // Connect to new sockets
+     std::string ports_str(ports_pkt.payload, ports_pkt.length);
+    size_t p1 = ports_str.find('|');
+    size_t p2 = ports_str.find('|', p1 + 1);
+    if (p1 == std::string::npos || p2 == std::string::npos) {
+        std::cerr << "❌ Malformed port message: " << ports_str << '\n';
+        return 1;
+    }
+
+    int command_port = std::stoi(ports_str.substr(0, p1));
+    int watcher_port = std::stoi(ports_str.substr(p1 + 1, p2 - p1 - 1));
+    int file_port    = std::stoi(ports_str.substr(p2 + 1));
+
     connect_to_port(command_socket, command_port);
-    connect_to_port(watcher_socket, watcher_port);
+    std::cout << "✅ Connected to command socket on port " << command_port << '\n';
 
-    // Creates the client sync_dir
+    connect_to_port(watcher_socket, watcher_port);
+    std::cout << "✅ Connected to watcher socket on port " << watcher_port << '\n';
+
+    connect_to_port(file_socket, file_port);
+    std::cout << "✅ Connected to file socket on port " << file_port << '\n';
+
     std::string g_sync_dir = get_sync_dir();
     std::cout << "Local sync directory: " << g_sync_dir << '\n';
 
-    connect_to_port(command_socket, COMMAND_PORT);
-
-    {
-        // handshake with username
-        std::string hello = "hello|" + username;
-        Packet pkt{};
-        pkt.type = PACKET_TYPE_CMD;
-        pkt.seqn = 0;
-        pkt.length = std::min<int>(hello.size(), MAX_PAYLOAD_SIZE);
-        std::memcpy(pkt.payload, hello.c_str(), pkt.length);
-        send_packet(command_socket, pkt);
-        Packet resp{};
-        recv_packet(command_socket, resp);
-        std::string msg(resp.payload, resp.length);
-        if (msg.find("DENY") == 0) {
-            std::cerr << "❌ Server refused connection: " << msg << '\n';
-            cleanup_sockets();
-            exit(1);
-        }
-    }
-    //if the connection was allowed by the server, continue:
-    connect_to_port(watcher_socket, WATCHER_PORT);
-    // connect_to_port(file_socket, FILE_PORT);
-
-    start_watcher(); // Start the watcher thread
+     start_watcher();
     std::thread inotify_thread(watch_sync_dir_inotify);
 
     init_command_callbacks(send_command, send_file);
@@ -400,11 +407,10 @@ int main(int argc, char* argv[]) {
         print_menu();
         std::getline(std::cin, input);
         if (input == "exit") {
-        send_exit_command();   // <-- notify the server
-        std::cout << "Closing connection... \n";            
-        break;
+            send_exit_command();
+            std::cout << "Closing connection... \n";            
+            break;
         } else {
-            // Handle regular command
             process_command(input);
         }
     }
