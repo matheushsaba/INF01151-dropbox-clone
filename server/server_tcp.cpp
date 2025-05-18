@@ -186,66 +186,206 @@ close_connection:
 }
 
 
-void start_server_socket(int port, void (*handler)(int)) {
-    int server_fd, client_fd;
-    sockaddr_in serv_addr{}, cli_addr{};
-    socklen_t clilen = sizeof(cli_addr);
-    {
-        std::lock_guard<std::mutex> lock(socket_creation_mutex);
+// void start_server_socket(int port, void (*handler)(int)) {
+//     int server_fd, client_fd;
+//     sockaddr_in serv_addr{}, cli_addr{};
+//     socklen_t clilen = sizeof(cli_addr);
+//     {
+//         std::lock_guard<std::mutex> lock(socket_creation_mutex);
 
-        // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
-        server_fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (server_fd < 0) {
-            perror("ERROR opening socket");
-            return;
-        }
+//         // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
+//         server_fd = socket(AF_INET, SOCK_STREAM, 0);
+//         if (server_fd < 0) {
+//             perror("ERROR opening socket");
+//             return;
+//         }
 
-        // Set server address and port. Slide 20 Aula-11
-        serv_addr.sin_family = AF_INET;
-        serv_addr.sin_addr.s_addr = INADDR_ANY;
-        serv_addr.sin_port = htons(port); // Ensures correct byte order on the communication. Slide 26 Aula-11
-        memset(&(serv_addr.sin_zero), 0, 8);
+//         // Set server address and port. Slide 20 Aula-11
+//         serv_addr.sin_family = AF_INET;
+//         serv_addr.sin_addr.s_addr = INADDR_ANY;
+//         serv_addr.sin_port = htons(port); // Ensures correct byte order on the communication. Slide 26 Aula-11
+//         memset(&(serv_addr.sin_zero), 0, 8);
 
-        // Bind the socket to the address and port. Slide 18 Aula-11
-        int bind_result = bind(server_fd, reinterpret_cast<sockaddr*>(&serv_addr), sizeof(serv_addr));
-        if (bind_result < 0) {
-            perror("ERROR on binding");
-            return;
-        }
+//         // Bind the socket to the address and port. Slide 18 Aula-11
+//         int bind_result = bind(server_fd, reinterpret_cast<sockaddr*>(&serv_addr), sizeof(serv_addr));
+//         if (bind_result < 0) {
+//             perror("ERROR on binding");
+//             return;
+//         }
     
-        // Start listening for incoming connections (backlog = 5, max number of connections)
-        // Slide 21 Aula-11
-        listen(server_fd, 5);
-        std::cout << "Server listening on port " << port << "...\n";
+//         // Start listening for incoming connections (backlog = 5, max number of connections)
+//         // Slide 21 Aula-11
+//         listen(server_fd, 5);
+//         std::cout << "Server listening on port " << port << "...\n";
+//     }
+
+//     while (true) {
+//         // Accept client connections. Slide 22 Aula-11
+//         client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&cli_addr), &clilen);
+//         if (client_fd < 0) {
+//             perror("ERROR on accept");
+//             continue;
+//         }
+
+//         // Create a new detached thread to handle each client
+//         std::thread(handler, client_fd).detach();
+//     }
+
+//     close(server_fd);
+// }
+
+// void handle_new_client(int initial_socket) {
+//     // 1. Recebe username do cliente
+//     Packet pkt;
+//     if (!recv_packet(initial_socket, pkt) || pkt.type != PACKET_TYPE_CMD) {
+//         std::cerr << "Erro ao receber identificação do cliente.\n";
+//         close(initial_socket);
+//         return;
+//     }
+
+//     std::string username(pkt.payload, pkt.length);
+//     std::cout << "Novo cliente conectado: " << username << '\n';
+
+//     // 2. Cria novas threads por cliente
+//     std::thread(handle_command_client, initial_socket).detach(); // reutiliza o socket original como "comando"
+//     std::thread watcher_thread(start_server_socket, WATCHER_PORT, handle_watcher_client);
+// }
+
+// int main() {
+//     std::cout << std::unitbuf;             // C++-way: flush after each insertion
+    
+//     // Start one server socket per function on different ports
+//     // std::thread command_thread(start_server_socket, COMMAND_PORT, handle_command_client);
+//     // std::thread watcher_thread(start_server_socket, WATCHER_PORT, handle_watcher_client);
+//     // std::thread file_thread(start_server_socket, FILE_PORT, handle_file_client);
+
+//     // Wait for each server thread to finish (keeps the main process alive)
+//     // command_thread.join();
+//     // watcher_thread.join();
+//     // file_thread.join();
+
+//     start_server_socket(MAIN_PORT, handle_new_client);
+
+//     return 0;
+// }
+
+int create_dynamic_socket(int& port_out) {
+    // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        perror("Error: server socket opening");
+        return -1;
     }
 
+    // Set server address and port. Slide 20 Aula-11
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = 0; // bind to any available port
+
+    // Bind the socket to the address and port. Slide 18 Aula-11
+    int bind_result = bind(sockfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    if (bind_result < 0) {
+        perror("Error: server socket bind");
+        return -1;
+    }
+
+    socklen_t len = sizeof(addr);
+    if (getsockname(sockfd, reinterpret_cast<sockaddr*>(&addr), &len) == -1) {
+        perror("getsockname failed");
+        return -1;
+    }
+
+    port_out = ntohs(addr.sin_port);
+    listen(sockfd, 1); // Listen for 1 client
+    return sockfd;
+}
+
+void handle_new_connection(int listener_socket) {
     while (true) {
-        // Accept client connections. Slide 22 Aula-11
-        client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&cli_addr), &clilen);
+        sockaddr_in client_addr{};
+        socklen_t client_len = sizeof(client_addr);
+        int client_fd = accept(listener_socket, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
         if (client_fd < 0) {
-            perror("ERROR on accept");
+            perror("accept failed");
             continue;
         }
 
-        // Create a new detached thread to handle each client
-        std::thread(handler, client_fd).detach();
-    }
+        std::thread([client_fd]() {
+            // Receive username
+            Packet pkt;
+            if (!recv_packet(client_fd, pkt)) {
+                close(client_fd);
+                return;
+            }
+            std::string username(pkt.payload, pkt.length);
+            std::cout << "Client connected: " << username << std::endl;
 
-    close(server_fd);
+            // Create command and watcher sockets
+            int cmd_port, watch_port;
+            int cmd_sock = create_dynamic_socket(cmd_port);
+            int watch_sock = create_dynamic_socket(watch_port);
+
+            if (cmd_sock < 0 || watch_sock < 0) {
+                std::cerr << "Failed to create dynamic sockets.\n";
+                close(client_fd);
+                return;
+            }
+
+            // Send the two ports to the client
+            std::string ports_msg = std::to_string(cmd_port) + "|" + std::to_string(watch_port);
+            Packet reply{};
+            reply.type = PACKET_TYPE_CMD;
+            reply.seqn = 0;
+            reply.length = ports_msg.size();
+            std::memcpy(reply.payload, ports_msg.c_str(), reply.length);
+            send_packet(client_fd, reply);
+            close(client_fd); // Done with initial handshake
+
+            // Wait for client to connect to command and watcher sockets
+            sockaddr_in tmp{};
+            socklen_t tmp_len = sizeof(tmp);
+            int cmd_client_fd = accept(cmd_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
+            int watch_client_fd = accept(watch_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
+
+            std::thread(handle_command_client, cmd_client_fd).detach();
+            std::thread(handle_watcher_client, watch_client_fd).detach();
+
+            close(cmd_sock);
+            close(watch_sock);
+        }).detach();
+    }
 }
 
 int main() {
-    std::cout << std::unitbuf;             // C++-way: flush after each insertion
-    
-    // Start one server socket per function on different ports
-    std::thread command_thread(start_server_socket, COMMAND_PORT, handle_command_client);
-    std::thread watcher_thread(start_server_socket, WATCHER_PORT, handle_watcher_client);
-    std::thread file_thread(start_server_socket, FILE_PORT, handle_file_client);
+    std::cout << std::unitbuf;
 
-    // Wait for each server thread to finish (keeps the main process alive)
-    command_thread.join();
-    watcher_thread.join();
-    file_thread.join();
+    // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
+    int listener_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener_socket < 0) {
+        perror("Error opening listener socket");
+        return -1;
+    }
+
+    // Set server address and port. Slide 20 Aula-11
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(4000); // Well-known port for accepting new clients
+
+    // Bind the socket to the address and port. Slide 18 Aula-11
+    int bind_result = bind(listener_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    if (bind_result < 0) {
+        perror("Error binding listener socket");
+        return -1;
+    }
+
+    // Start listening for incoming connections (backlog = 5, max number of connections)
+    // Slide 21 Aula-11
+    listen(listener_socket, 5);
+    std::cout << "Listening for new client sessions on port 4000...\n";
+
+    handle_new_connection(listener_socket);
 
     return 0;
 }

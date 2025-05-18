@@ -336,14 +336,38 @@ int main(int argc, char* argv[]) {
 
     username = argv[1];                  // e.g. "alice"
     hostname = argv[2];                  // e.g. "127.0.0.1"
-    int base_port = std::stoi(argv[3]);  // e.g. 4000
+    int port = std::stoi(argv[3]);  // e.g. 4000
+
+    int session_socket;
+    connect_to_port(session_socket, port);
+
+    // Send username
+    Packet hello{};
+    hello.type = PACKET_TYPE_CMD;
+    hello.length = username.size();
+    std::memcpy(hello.payload, username.c_str(), hello.length);
+    send_packet(session_socket, hello);
+
+    // Receive new ports
+    Packet ports_pkt;
+    recv_packet(session_socket, ports_pkt);
+    close(session_socket);
+
+    std::string ports_str(ports_pkt.payload, ports_pkt.length);
+    auto sep = ports_str.find('|');
+    int command_port = std::stoi(ports_str.substr(0, sep));
+    int watcher_port = std::stoi(ports_str.substr(sep + 1));
+
+    // Connect to new sockets
+    connect_to_port(command_socket, command_port);
+    connect_to_port(watcher_socket, watcher_port);
 
     // Creates the client sync_dir
     std::string g_sync_dir = get_sync_dir();
     std::cout << "Local sync directory: " << g_sync_dir << '\n';
 
-    connect_to_port(command_socket, COMMAND_PORT);
-    connect_to_port(watcher_socket, WATCHER_PORT);
+    // connect_to_port(command_socket, COMMAND_PORT);
+    // connect_to_port(watcher_socket, WATCHER_PORT);
     // connect_to_port(file_socket, FILE_PORT);
 
     start_watcher(); // Start the watcher thread
