@@ -354,12 +354,11 @@ int main(int argc, char* argv[]) {
     std::string input;
     while (true) {
         print_menu();
-        std::cout << "Command ('exit' to quit): ";
         std::getline(std::cin, input);
-
         if (input == "exit") {
-            send_exit_command();   // <-- notify the server
-            break;
+        send_exit_command();   // <-- notify the server
+        std::cout << "Closing connection... \n";            
+        break;
         } else {
             // Handle regular command
             process_command(input);
