@@ -9,10 +9,13 @@
 #include <thread>
 #include <filesystem>
 #include <fstream>
+#include <atomic>
+#include <vector>
 #include "command_interface.hpp"
 #include "../common/packet.h"
 #include <sys/stat.h>
 #include "../common/common.hpp"
+#include <sys/inotify.h>
 
 extern void connect_to_port(int& socket_fd, int port);
 extern int file_socket;
@@ -23,12 +26,15 @@ extern std::string hostname;
 constexpr int COMMAND_PORT = 4000;
 constexpr int WATCHER_PORT = 4001;
 constexpr int FILE_PORT = 4002;
+constexpr int NAME_MAX = 255;
 
 int command_socket;
 int watcher_socket;
 int file_socket;
+
 std::string hostname;
 std::string username;
+std::atomic<bool> watcher_running{true};
 
 std::string get_sync_dir();
 
@@ -250,6 +256,77 @@ void cleanup_sockets() {            // friendlier shutdown
     close(file_socket);
 }
 
+void watch_sync_dir_inotify() {
+    std::string sync_dir = get_sync_dir();
+    int inotify_fd = inotify_init1(IN_NONBLOCK);
+    if (inotify_fd < 0) {
+        perror("inotify_init1");
+        return;
+    }
+
+    int wd = inotify_add_watch(inotify_fd, sync_dir.c_str(), IN_CREATE | IN_MODIFY | IN_DELETE);
+    if (wd < 0) {
+        perror("inotify_add_watch");
+        close(inotify_fd);
+        return;
+    }
+
+    const size_t event_size = sizeof(struct inotify_event);
+    const size_t buf_len = 1024 * (event_size + NAME_MAX + 1);
+    std::vector<char> buffer(buf_len);
+
+    while (watcher_running) {
+        int length = read(inotify_fd, buffer.data(), buf_len);
+        if (length < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                usleep(100 * 1000); // Sleep 100ms
+                continue;
+            }
+            perror("read");
+            break;
+        }
+
+        for (int i = 0; i < length;) {
+            struct inotify_event* event = (struct inotify_event*)&buffer[i];
+            if (event->len > 0) {
+                std::string filepath = sync_dir + "/" + event->name;
+                if (event->mask & (IN_CREATE | IN_MODIFY)) {
+                    std::cout << "File created/modified: " << filepath << std::endl;
+                    if (std::filesystem::is_regular_file(filepath)) {
+                        // // Reconnect to the file transfer port (4002) before each upload
+                        connect_to_port(file_socket, FILE_PORT);
+                        send_file(filepath); // Upload the file
+                        shutdown(file_socket, SHUT_RDWR);
+                        close(file_socket);
+                    }
+                } else if (event->mask & IN_DELETE) {
+                    std::cout << "File deleted: " << filepath << std::endl;
+                    std::string filename = event->name;
+                    // Reconnect to the file transfer port (4002) before each delete
+                    connect_to_port(file_socket, FILE_PORT);
+
+                    // Build and send delete command packet
+                    std::string header = "delfile|" + username + "|" + filename;
+                    Packet header_pkt{};
+                    header_pkt.type = PACKET_TYPE_CMD;
+                    header_pkt.seqn = 0;
+                    header_pkt.length = std::min((int)header.size(), MAX_PAYLOAD_SIZE);
+                    std::memcpy(header_pkt.payload, header.c_str(), header_pkt.length);
+
+                    send_packet(file_socket, header_pkt);
+
+                    shutdown(file_socket, SHUT_RDWR);
+                    close(file_socket);
+                }
+            }
+            i += event_size + event->len;
+        }
+    }
+
+    inotify_rm_watch(inotify_fd, wd);
+    close(inotify_fd);
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 4) {
         std::cerr << "Usage: " << argv[0]
@@ -270,6 +347,7 @@ int main(int argc, char* argv[]) {
     // connect_to_port(file_socket, FILE_PORT);
 
     start_watcher(); // Start the watcher thread
+    std::thread inotify_thread(watch_sync_dir_inotify);
 
     init_command_callbacks(send_command, send_file);
 
@@ -288,6 +366,8 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    watcher_running = false;
+    if (inotify_thread.joinable()) inotify_thread.join();
     cleanup_sockets();
     return 0;
 }
