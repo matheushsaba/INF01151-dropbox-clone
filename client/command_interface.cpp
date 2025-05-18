@@ -123,7 +123,7 @@ void print_options () {
 	std::cout << "# list_server \n"; //list all user files in the server
 	std::cout << "# list_client \n"; //list all user files in the client
 	//get_sync_dir: command executed in the server
-	std::cout << "# exit \n"; // close section with the server
+	std::cout << "# exit (to quit)\n"; // close section with the server
 }
 
 void print_menu(){
