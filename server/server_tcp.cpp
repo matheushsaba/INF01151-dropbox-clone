@@ -12,7 +12,7 @@
 #include <fstream>  // Para std::ofstream
 #include <sys/stat.h>     // stat() for MAC times
 #include "../common/common.hpp"
-
+#include "session_manager.hpp"
 
 // constexpr int PORT = 4000;
 // std::mutex file_mutex; // Usamos mutex para sincronizar threads em processos diferentes
@@ -22,6 +22,8 @@ constexpr int WATCHER_PORT = 4001;
 constexpr int FILE_PORT = 4002;
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
+
+static SessionManager session_manager; 
 
 std::string get_sync_dir(const std::string& username) {
     namespace fs = std::filesystem;
@@ -42,43 +44,84 @@ std::string get_sync_dir(const std::string& username) {
 void handle_command_client(int client_socket) {
     Packet pkt;
 
-    if (!recv_packet(client_socket, pkt)) {
-        std::cerr << "Erro ao receber pacote de comando.\n";
+    //receive first packet: initial handshake
+    if (!recv_packet(client_socket, pkt) || pkt.type != PACKET_TYPE_CMD) {
+        std::cerr << "Error with the initial handshake.\n";
         close(client_socket);
         return;
     }
+
     std::string command(pkt.payload, pkt.length);
-    std::cout << "Command received: " << command << std::endl;
-
-    Packet response;
-    response.type = PACKET_TYPE_ACK;
-    response.seqn = pkt.seqn;
-    response.total_size = 0;
-
-    {
-        std::lock_guard<std::mutex> lock(file_mutex);
-
-        if (command.rfind("list_server", 0) == 0) {
-            std::string username;
-            size_t pos = command.find('|');
-            if (pos != std::string::npos) {
-                username = command.substr(pos + 1);
-            }
-
-            std::string user_dir = get_sync_dir(username);
-            std::string response_data = common::list_files_with_mac(get_sync_dir(username));
-
-            response.length = std::min((int)response_data.size(), MAX_PAYLOAD_SIZE);
-            std::memcpy(response.payload, response_data.c_str(), response.length);
-        } else {
-            const char* reply = "Comando desconhecido ou não implementado.";
-            response.length = strlen(reply);
-            std::memcpy(response.payload, reply, response.length);
-        }
+    if (command.rfind("hello|", 0) != 0) {
+        std::cerr << "Received: " << command << "\n";
+        close(client_socket);
+        return;
     }
 
-    send_packet(client_socket, response);
+    std::string username = command.substr(6);
+
+    if (!session_manager.try_connect(username)) {
+        std::cerr << "Max device connection exceeded for " << username << '\n';
+        Packet deny{};
+        deny.type = PACKET_TYPE_ACK;
+        std::string msg = "DENY: Max of 2 devices already connected.";
+        deny.length = msg.size();
+        memcpy(deny.payload, msg.c_str(), deny.length);
+        send_packet(client_socket, deny);
+        close(client_socket);
+        return;
+    }
+
+    // success ACK
+    Packet ack{};
+    ack.type = PACKET_TYPE_ACK;
+    std::string msg = "OK";
+    ack.length = msg.size();
+    memcpy(ack.payload, msg.c_str(), ack.length);
+    send_packet(client_socket, ack);
+
+    while(true) {
+
+        if (!recv_packet(client_socket, pkt)) {
+            std::cerr << "Erro ao receber pacote de comando.\n";
+            close(client_socket);
+            return;
+        }
+        std::string command(pkt.payload, pkt.length);
+        std::cout << "Command received: " << command << std::endl;
+
+        Packet response;
+        response.type = PACKET_TYPE_ACK;
+        response.seqn = pkt.seqn;
+        response.total_size = 0;
+
+        {
+            std::lock_guard<std::mutex> lock(file_mutex);
+
+            if (command.rfind("list_server", 0) == 0) {
+                std::string username;
+                size_t pos = command.find('|');
+                if (pos != std::string::npos) {
+                    username = command.substr(pos + 1);
+                }
+
+                std::string user_dir = get_sync_dir(username);
+                std::string response_data = common::list_files_with_mac(get_sync_dir(username));
+
+                response.length = std::min((int)response_data.size(), MAX_PAYLOAD_SIZE);
+                std::memcpy(response.payload, response_data.c_str(), response.length);
+            } else {
+                const char* reply = "Comando desconhecido ou não implementado.";
+                response.length = strlen(reply);
+                std::memcpy(response.payload, reply, response.length);
+            }
+        }
+
+        send_packet(client_socket, response);
+    }
+    session_manager.disconnect(username);
     close(client_socket);
+
 }
 
 // Listens for updates, could monitor for file changes

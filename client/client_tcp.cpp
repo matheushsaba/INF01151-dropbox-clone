@@ -366,8 +366,28 @@ int main(int argc, char* argv[]) {
     std::string g_sync_dir = get_sync_dir();
     std::cout << "Local sync directory: " << g_sync_dir << '\n';
 
-    // connect_to_port(command_socket, COMMAND_PORT);
-    // connect_to_port(watcher_socket, WATCHER_PORT);
+    connect_to_port(command_socket, COMMAND_PORT);
+
+    {
+        // handshake with username
+        std::string hello = "hello|" + username;
+        Packet pkt{};
+        pkt.type = PACKET_TYPE_CMD;
+        pkt.seqn = 0;
+        pkt.length = std::min<int>(hello.size(), MAX_PAYLOAD_SIZE);
+        std::memcpy(pkt.payload, hello.c_str(), pkt.length);
+        send_packet(command_socket, pkt);
+        Packet resp{};
+        recv_packet(command_socket, resp);
+        std::string msg(resp.payload, resp.length);
+        if (msg.find("DENY") == 0) {
+            std::cerr << "❌ Server refused connection: " << msg << '\n';
+            cleanup_sockets();
+            exit(1);
+        }
+    }
+    //if the connection was allowed by the server, continue:
+    connect_to_port(watcher_socket, WATCHER_PORT);
     // connect_to_port(file_socket, FILE_PORT);
 
     start_watcher(); // Start the watcher thread
@@ -378,12 +398,11 @@ int main(int argc, char* argv[]) {
     std::string input;
     while (true) {
         print_menu();
-        std::cout << "Command ('exit' to quit): ";
         std::getline(std::cin, input);
-
         if (input == "exit") {
-            send_exit_command();   // <-- notify the server
-            break;
+        send_exit_command();   // <-- notify the server
+        std::cout << "Closing connection... \n";            
+        break;
         } else {
             // Handle regular command
             process_command(input);
