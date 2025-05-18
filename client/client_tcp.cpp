@@ -28,6 +28,7 @@ constexpr int WATCHER_PORT = 4001;
 constexpr int FILE_PORT = 4002;
 constexpr int NAME_MAX = 255;
 
+int dynamic_file_port = -1;
 int command_socket;
 int watcher_socket;
 int file_socket;
@@ -294,7 +295,7 @@ void watch_sync_dir_inotify() {
                     std::cout << "File created/modified: " << filepath << std::endl;
                     if (std::filesystem::is_regular_file(filepath)) {
                         // // Reconnect to the file transfer port (4002) before each upload
-                        connect_to_port(file_socket, FILE_PORT);
+                        connect_to_port(file_socket, dynamic_file_port);
                         send_file(filepath); // Upload the file
                         shutdown(file_socket, SHUT_RDWR);
                         close(file_socket);
@@ -303,7 +304,7 @@ void watch_sync_dir_inotify() {
                     std::cout << "File deleted: " << filepath << std::endl;
                     std::string filename = event->name;
                     // Reconnect to the file transfer port (4002) before each delete
-                    connect_to_port(file_socket, FILE_PORT);
+                    connect_to_port(file_socket, dynamic_file_port);
 
                     // Build and send delete command packet
                     std::string header = "delfile|" + username + "|" + filename;
@@ -373,7 +374,7 @@ int main(int argc, char* argv[]) {
 
     close(session_socket);  // We no longer use the initial socket
 
-     std::string ports_str(ports_pkt.payload, ports_pkt.length);
+    std::string ports_str(ports_pkt.payload, ports_pkt.length);
     size_t p1 = ports_str.find('|');
     size_t p2 = ports_str.find('|', p1 + 1);
     if (p1 == std::string::npos || p2 == std::string::npos) {
@@ -383,7 +384,8 @@ int main(int argc, char* argv[]) {
 
     int command_port = std::stoi(ports_str.substr(0, p1));
     int watcher_port = std::stoi(ports_str.substr(p1 + 1, p2 - p1 - 1));
-    int file_port    = std::stoi(ports_str.substr(p2 + 1));
+    // int file_port    = std::stoi(ports_str.substr(p2 + 1));
+    dynamic_file_port = std::stoi(ports_str.substr(p2 + 1));
 
     connect_to_port(command_socket, command_port);
     std::cout << "✅ Connected to command socket on port " << command_port << '\n';
@@ -391,13 +393,13 @@ int main(int argc, char* argv[]) {
     connect_to_port(watcher_socket, watcher_port);
     std::cout << "✅ Connected to watcher socket on port " << watcher_port << '\n';
 
-    connect_to_port(file_socket, file_port);
-    std::cout << "✅ Connected to file socket on port " << file_port << '\n';
+    // connect_to_port(file_socket, dynamic_file_port);
+    // std::cout << "✅ Connected to file socket on port " << dynamic_file_port << '\n';
 
     std::string g_sync_dir = get_sync_dir();
     std::cout << "Local sync directory: " << g_sync_dir << '\n';
 
-     start_watcher();
+    start_watcher();
     std::thread inotify_thread(watch_sync_dir_inotify);
 
     init_command_callbacks(send_command, send_file);
