@@ -2,7 +2,7 @@
 #  Toolchain & flags
 # ---------------------------------------------------------------------------
 CXX      ?= g++
-CXXFLAGS ?= -std=c++17 -Wall -Wextra -pedantic -pthread
+CXXFLAGS ?= -g -std=c++17 -Wall -Wextra -pedantic -pthread
 
 # ---------------------------------------------------------------------------
 #  Directories & files

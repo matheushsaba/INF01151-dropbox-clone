@@ -265,7 +265,7 @@ void watch_sync_dir_inotify() {
         return;
     }
 
-    int wd = inotify_add_watch(inotify_fd, sync_dir.c_str(), IN_CREATE | IN_MODIFY | IN_DELETE);
+    int wd = inotify_add_watch(inotify_fd, sync_dir.c_str(), IN_CLOSE_WRITE | IN_DELETE);
     if (wd < 0) {
         perror("inotify_add_watch");
         close(inotify_fd);
@@ -291,8 +291,8 @@ void watch_sync_dir_inotify() {
             struct inotify_event* event = (struct inotify_event*)&buffer[i];
             if (event->len > 0) {
                 std::string filepath = sync_dir + "/" + event->name;
-                if (event->mask & (IN_CREATE | IN_MODIFY)) {
-                    std::cout << "File created/modified: " << filepath << std::endl;
+                if (event->mask & IN_CLOSE_WRITE) {
+                    std::cout << "File closed after write: " << filepath << std::endl;
                     if (std::filesystem::is_regular_file(filepath)) {
                         // // Reconnect to the file transfer port (4002) before each upload
                         connect_to_port(file_socket, dynamic_file_port);

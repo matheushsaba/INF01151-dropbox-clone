@@ -325,17 +325,35 @@ void handle_new_connection(int listener_socket) {
             socklen_t tmp_len = sizeof(tmp);
             int cmd_client_fd   = accept(cmd_sock,   reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
             int watch_client_fd = accept(watch_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
-            int file_client_fd  = accept(file_sock,  reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
+            // int file_client_fd  = accept(file_sock,  reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
+            
+            // Detach watchers for command and watcher as before
+            std::thread(handle_command_client, cmd_client_fd).detach();
+            std::thread(handle_watcher_client, watch_client_fd).detach();
+
+            // Start a thread that loops and handles multiple file uploads
+            std::thread([file_sock]() {
+                while (true) {
+                    sockaddr_in tmp{};
+                    socklen_t tmp_len = sizeof(tmp);
+                    int file_client_fd = accept(file_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
+                    if (file_client_fd < 0) {
+                        perror("accept failed on file socket");
+                        continue;
+                    }
+                    std::thread(handle_file_client, file_client_fd).detach();
+                }
+            }).detach();
 
             close(cmd_sock);
             close(watch_sock);
-            close(file_sock);
+            // close(file_sock);
 
             std::cout << "✅ User " << username << " fully connected (CMD/WATCH/FILE sockets established)\n";
 
             std::thread(handle_command_client, cmd_client_fd).detach();
             std::thread(handle_watcher_client, watch_client_fd).detach();
-            std::thread(handle_file_client,    file_client_fd).detach();
+            // std::thread(handle_file_client,    file_client_fd).detach();
         }).detach();
     }
 }
