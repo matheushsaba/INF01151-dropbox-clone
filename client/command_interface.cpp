@@ -67,21 +67,6 @@ void handle_upload(const std::vector<std::string>& args) {
         std::cerr << "Falha ao mover o arquivo para o diretório de sincronização.\n";
         return;
     }
-
-    // Reconnect to the file transfer port (4002) before each upload
-    extern std::string hostname;
-    extern int file_socket;
-    constexpr int FILE_PORT = 4002;
-
-    // Create a fresh connection for the upload
-    connect_to_port(file_socket, FILE_PORT);
-
-    // Upload from sync_dir
-    send_file_function(sync_path);
-
-    // Gracefully close the file socket to notify the server that upload is finished
-    shutdown(file_socket, SHUT_RDWR);
-    close(file_socket);
 }
 
 void handle_download(const std::vector<std::string>& args) {
