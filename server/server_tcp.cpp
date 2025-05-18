@@ -54,7 +54,7 @@ void handle_command_client(int client_socket) {
 
     std::string username = command.substr(6);
 
-    if (!session_manager.try_connect(username)) {
+    if (!session_manager.try_connect(username, client_socket)) {
         std::cerr << "Max device connection exceeded for " << username << '\n';
         Packet deny{};
         deny.type = PACKET_TYPE_ACK;
@@ -113,7 +113,7 @@ void handle_command_client(int client_socket) {
 
         send_packet(client_socket, response);
     }
-    session_manager.disconnect(username);
+    session_manager.disconnect(username, client_socket);
     close(client_socket);
 
 }
@@ -275,7 +275,7 @@ void handle_new_connection(int listener_socket) {
             std::string username(pkt.payload, pkt.length);
             std::cout << "🔗 Connection attempt from user: " << username << std::endl;
 
-            if (!session_manager.try_connect(username)) {
+            if (!session_manager.try_connect(username, client_fd)) {
                 std::cerr << "❌ Max devices connected for user: " << username << '\n';
                 Packet deny{};
                 deny.type = PACKET_TYPE_ACK;
