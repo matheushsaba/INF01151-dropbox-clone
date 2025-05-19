@@ -13,6 +13,8 @@
 #include <sys/stat.h>     // stat() for MAC times
 #include "../common/common.hpp"
 #include "session_manager.hpp"
+#include <map>
+#include "FileInfo.hpp"
 
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
@@ -64,10 +66,77 @@ void handle_command_client(int client_socket) {
                 }
 
                 std::string user_dir = get_sync_dir(username);
-                std::string response_data = common::list_files_with_mac(get_sync_dir(username));
+                std::vector<FileInfo> file_infos;
 
-                response.length = std::min((int)response_data.size(), MAX_PAYLOAD_SIZE);
-                std::memcpy(response.payload, response_data.c_str(), response.length);
+                for (const auto& entry : std::filesystem::directory_iterator(user_dir)) {
+                    if (!entry.is_regular_file()) continue;
+                    struct stat st{};
+                    if (::stat(entry.path().c_str(), &st) == 0) {
+                        FileInfo info{};
+                        strncpy(info.name, entry.path().filename().string().c_str(), sizeof(info.name) - 1);
+                        info.mtime = st.st_mtime;
+                        info.ctime = st.st_ctime;
+                        file_infos.push_back(info);
+                    }
+                }
+
+                // Serialize the vector to a buffer
+                const char* data_ptr = reinterpret_cast<const char*>(file_infos.data());
+                size_t bytes_left = file_infos.size() * sizeof(FileInfo);
+                int seqn = pkt.seqn;
+
+                while (bytes_left > 0) {
+                    int chunk_size = std::min((int)bytes_left, MAX_PAYLOAD_SIZE);
+                    Packet response;
+                    response.type = PACKET_TYPE_ACK;
+                    response.seqn = seqn++;
+                    response.length = chunk_size;
+                    std::memcpy(response.payload, data_ptr, chunk_size);
+                    send_packet(client_socket, response);
+
+                    data_ptr += chunk_size;
+                    bytes_left -= chunk_size;
+                }
+
+                // Optionally, send a zero-length packet to indicate end
+                // Packet end_pkt;
+                // end_pkt.type = PACKET_TYPE_ACK;
+                // end_pkt.seqn = seqn;
+                // end_pkt.length = 0;
+                // send_packet(client_socket, end_pkt);
+            } else if (command.rfind("download", 0) == 0) {
+                std::string filename = command.substr(9);
+                std::string full_path = get_sync_dir(username) + "/" + filename;
+
+                if (std::filesystem::exists(full_path)) {
+                    std::ifstream file(full_path, std::ios::binary);
+                    if (file) {
+                        std::string file_content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+                        response.length = std::min((int)file_content.size(), MAX_PAYLOAD_SIZE);
+                        std::memcpy(response.payload, file_content.c_str(), response.length);
+                    } else {
+                        const char* reply = "Erro ao abrir o arquivo.";
+                        response.length = strlen(reply);
+                        std::memcpy(response.payload, reply, response.length);
+                    }
+                } else {
+                    const char* reply = "Arquivo não encontrado.";
+                    response.length = strlen(reply);
+                    std::memcpy(response.payload, reply, response.length);
+                }
+            } else if (command.rfind("delete", 0) == 0) {
+                std::string filename = command.substr(7);
+                std::string full_path = get_sync_dir(username) + "/" + filename;
+
+                if (std::filesystem::remove(full_path)) {
+                    const char* reply = "Arquivo deletado com sucesso.";
+                    response.length = strlen(reply);
+                    std::memcpy(response.payload, reply, response.length);
+                } else {
+                    const char* reply = "Erro ao deletar o arquivo.";
+                    response.length = strlen(reply);
+                    std::memcpy(response.payload, reply, response.length);
+            }
             } else {
                 const char* reply = "Comando desconhecido ou não implementado.";
                 response.length = strlen(reply);
@@ -75,7 +144,7 @@ void handle_command_client(int client_socket) {
             }
         }
 
-        send_packet(client_socket, response);
+        //send_packet(client_socket, response);
     }
 }
 

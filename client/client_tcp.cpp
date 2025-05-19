@@ -16,6 +16,9 @@
 #include <sys/stat.h>
 #include "../common/common.hpp"
 #include <sys/inotify.h>
+#include <map> 
+#include <utime.h>
+#include "FileInfo.hpp"
 
 extern void connect_to_port(int& socket_fd, int port);
 extern int file_socket;
@@ -223,9 +226,39 @@ std::string get_sync_dir()
     return cached;
 }
 
-void list_client_sync_dir()
+std::vector<FileInfo> list_client_sync_dir()
 {
-    std::cout << '\n' << common::list_files_with_mac(get_sync_dir());
+    std::string sync_dir = get_sync_dir();
+    std::cout << "Arquivos no diretório de sincronização:\n";
+    for (const auto& entry : std::filesystem::directory_iterator(sync_dir)) {
+        if (entry.is_regular_file()) {
+            std::cout << " - " << entry.path().filename().string() << '\n';
+        }
+    }
+}
+
+std::vector<FileInfo> get_server_sync_dir() {
+    std::string cmd = "list_server|" + username;
+    send_command(cmd);       
+
+    std::vector<char> buffer;
+    while (true) {
+        Packet pkt;
+        if (!recv_packet(command_socket, pkt)) {
+            std::cout << "Erro ao receber resposta do servidor.\n";
+            return;
+        }
+        if (pkt.length == 0) break; // End of transmission
+        buffer.insert(buffer.end(), pkt.payload, pkt.payload + pkt.length);
+    }
+
+    size_t count = buffer.size() / sizeof(FileInfo);
+    std::vector<FileInfo> files;
+    const FileInfo* infos = reinterpret_cast<const FileInfo*>(buffer.data());
+    for (size_t i = 0; i < count; ++i) {
+        files.push_back(infos[i]);
+    }
+    return files;
 }
 
 void cleanup_sockets() {            // friendlier shutdown
@@ -311,6 +344,62 @@ void watch_sync_dir_inotify() {
     close(inotify_fd);
 }
 
+void sync_with_server() {
+    std::string sync_dir = get_sync_dir();
+    std::cout << "Syncing with server...\n";
+    
+    std::string cmd = "list_server|" + username;
+    send_command(cmd);
+    Packet resp{};
+    recv_packet(command_socket, resp);
+    std::string msg(resp.payload, resp.length);
+
+    std::map<std::string, time_t> server_files;
+    std::istringstream iss(msg);
+    std::string line, filename;
+    time_t mtime = 0;
+    while (std::getline(iss, line)) {
+        if (line.rfind("Nome: ", 0) == 0) {
+            filename = line.substr(6);
+        } else if (line.rfind("  Modificado (mtime): ", 0) == 0) {
+            mtime = std::stol(line.substr(22));
+            server_files[filename] = mtime;
+        }
+    }
+
+    std::map<std::string, time_t> local_files;
+    for (const auto& entry : std::filesystem::directory_iterator(sync_dir)) {
+        if (!entry.is_regular_file()) continue;
+        struct stat st{};
+        if (::stat(entry.path().c_str(), &st) == 0) {
+            local_files[entry.path().filename().string()] = st.st_mtime;
+        }
+    }
+
+    // Compare and pull changed/missing files from server
+    for (const auto& [srv_file, srv_mtime] : server_files) {
+        auto it = local_files.find(srv_file);
+        if (it == local_files.end() || it->second < srv_mtime) {
+            std::cout << "Pulling updated file from server: " << srv_file << std::endl;
+            // TODO: Implement download logic here, e.g.:
+            send_command("download|" + srv_file);
+            Packet file_resp{};
+            recv_packet(command_socket, file_resp);
+
+            // Save file to sync_dir
+            std::string local_path = sync_dir + "/" + srv_file;
+            std::ofstream ofs(local_path, std::ios::binary | std::ios::trunc);
+            ofs.write(file_resp.payload, file_resp.length);
+            ofs.close();
+
+            struct utimbuf new_times;
+            new_times.actime = srv_mtime;   // access time
+            new_times.modtime = srv_mtime;  // modification time
+            utime(local_path.c_str(), &new_times);
+        }
+    }
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 4) {
         std::cerr << "Usage: " << argv[0]
@@ -364,6 +453,8 @@ int main(int argc, char* argv[]) {
         std::cerr << "❌ Malformed port message: " << ports_str << '\n';
         return 1;
     }
+    
+    // sync_with_server();
 
     int command_port = std::stoi(ports_str.substr(0, p1));
     int watcher_port = std::stoi(ports_str.substr(p1 + 1, p2 - p1 - 1));
