@@ -3,6 +3,9 @@
 #include <iomanip>
 #include <sstream>
 #include <cstring>
+#include <iostream>
+#include <vector>
+#include "FileInfo.hpp"
 
 namespace fs = std::filesystem;
 
@@ -38,23 +41,17 @@ std::string ensure_sync_dir(const fs::path& base,
    Build the formatted list *once* – both the client and the server used
    to carry a copy-paste of this very loop.               :contentReference[oaicite:0]{index=0}
    ------------------------------------------------------------------------- */
-std::string list_files_with_mac(const fs::path& dir)
+void list_files_with_mac(const std::vector<FileInfo>& files)
 {
-    std::ostringstream out;
-
-    for (const auto& entry : fs::directory_iterator(dir)) {
-        if (!entry.is_regular_file()) continue;
-
-        struct stat st{};
-        if (::stat(entry.path().c_str(), &st) != 0) continue;
-
-        out << "Nome: " << entry.path().filename().string() << '\n'
-            << "  Acesso (atime):    " << to_string(st.st_atime) << '\n'
-            << "  Modificado (mtime): " << to_string(st.st_mtime) << '\n'
-            << "  Criado (ctime):     " << to_string(st.st_ctime) << '\n'
-            << "-------------------------------------------------------------\n";
+    for (const auto& info : files) {
+        std::cout << "Nome: " << info.name << '\n'
+                  << "  Modificado (mtime): " << info.mtime << '\n'
+                  << "  Criado (ctime):     " << info.ctime << '\n'
+                  << "-------------------------------------------------------------\n";
     }
-    return out.str().empty() ? "(nenhum arquivo encontrado)\n" : out.str();
+    if (files.empty()) {
+        std::cout << "(nenhum arquivo encontrado)\n";
+    }
 }
 
 } // namespace common
