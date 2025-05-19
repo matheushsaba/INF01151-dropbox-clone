@@ -218,12 +218,14 @@ void handle_watcher_client(int client_socket, const std::string& dir) {
                 notify_pkt.length = msg.size();
                 memcpy(notify_pkt.payload, msg.c_str(), notify_pkt.length);
                 std::cout << "sending notify: " << msg << std::endl;
+                if (event->mask & IN_DELETE || event->mask & IN_MOVED_FROM) {
+                    notify_pkt.type = PACKET_TYPE_DELETE;
+                }
                 send_packet(client_socket, notify_pkt);
             }
             ptr += sizeof(struct inotify_event) + event->len;
         }
     }
-
     inotify_rm_watch(fd, wd);
     close(fd);
 }

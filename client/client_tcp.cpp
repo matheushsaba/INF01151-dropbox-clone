@@ -417,6 +417,12 @@ void watch_server_sync(int socket_fd) {
         if (pkt.type == PACKET_TYPE_NOTIFY) {
             std::cout << "[watch_server_sync] Received server change notification. Syncing...\n";
             sync_with_server();
+        
+        } else if (pkt.type == PACKET_TYPE_DELETE) {
+            std::cout << "[watch_server_sync] Received server change notification. Syncing...\n";
+            std::string filename = pkt.payload;
+            std::string filename2 = filename.substr(19);
+            delete_from_sync_dir(filename2);
         }
     }
 }
