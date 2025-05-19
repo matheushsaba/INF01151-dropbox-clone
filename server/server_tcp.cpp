@@ -325,8 +325,7 @@ void handle_new_connection(int listener_socket) {
             socklen_t tmp_len = sizeof(tmp);
             int cmd_client_fd   = accept(cmd_sock,   reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
             int watch_client_fd = accept(watch_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
-            // int file_client_fd  = accept(file_sock,  reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
-            
+
             // Detach watchers for command and watcher as before
             std::thread(handle_command_client, cmd_client_fd).detach();
             std::thread(handle_watcher_client, watch_client_fd).detach();
@@ -347,13 +346,8 @@ void handle_new_connection(int listener_socket) {
 
             close(cmd_sock);
             close(watch_sock);
-            // close(file_sock);
-
             std::cout << "✅ User " << username << " fully connected (CMD/WATCH/FILE sockets established)\n";
 
-            std::thread(handle_command_client, cmd_client_fd).detach();
-            std::thread(handle_watcher_client, watch_client_fd).detach();
-            // std::thread(handle_file_client,    file_client_fd).detach();
         }).detach();
     }
 }
