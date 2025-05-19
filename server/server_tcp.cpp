@@ -14,7 +14,7 @@
 #include "../common/common.hpp"
 #include "session_manager.hpp"
 #include <map>
-#include "FileInfo.hpp"
+#include "../common/FileInfo.hpp"
 
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
@@ -37,7 +37,7 @@ std::string get_sync_dir(const std::string& username) {
 }
 
 // Function to deal with simple command messages
-void handle_command_client(int client_socket) {
+void handle_command_client(int client_socket, const std::string& username) {
     Packet pkt;
     
     while(true) {
@@ -84,11 +84,12 @@ void handle_command_client(int client_socket) {
                 const char* data_ptr = reinterpret_cast<const char*>(file_infos.data());
                 size_t bytes_left = file_infos.size() * sizeof(FileInfo);
                 int seqn = pkt.seqn;
-
+                std::cout << "Sending file_infos to client..." << std::endl;
                 while (bytes_left > 0) {
                     int chunk_size = std::min((int)bytes_left, MAX_PAYLOAD_SIZE);
+                    if (chunk_size <= 0) break;
                     Packet response;
-                    response.type = PACKET_TYPE_ACK;
+                    response.type = PACKET_TYPE_DATA;
                     response.seqn = seqn++;
                     response.length = chunk_size;
                     std::memcpy(response.payload, data_ptr, chunk_size);
@@ -99,11 +100,11 @@ void handle_command_client(int client_socket) {
                 }
 
                 // Optionally, send a zero-length packet to indicate end
-                // Packet end_pkt;
-                // end_pkt.type = PACKET_TYPE_ACK;
-                // end_pkt.seqn = seqn;
-                // end_pkt.length = 0;
-                // send_packet(client_socket, end_pkt);
+                Packet end_pkt;
+                end_pkt.type = PACKET_TYPE_END;
+                end_pkt.seqn = seqn;
+                end_pkt.length = 0;
+                send_packet(client_socket, end_pkt);
             } else if (command.rfind("download", 0) == 0) {
                 std::string filename = command.substr(9);
                 std::string full_path = get_sync_dir(username) + "/" + filename;
@@ -111,19 +112,38 @@ void handle_command_client(int client_socket) {
                 if (std::filesystem::exists(full_path)) {
                     std::ifstream file(full_path, std::ios::binary);
                     if (file) {
-                        std::string file_content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-                        response.length = std::min((int)file_content.size(), MAX_PAYLOAD_SIZE);
-                        std::memcpy(response.payload, file_content.c_str(), response.length);
+                        char buffer[MAX_PAYLOAD_SIZE];
+                        int seqn = pkt.seqn;
+                        while (file) {
+                            file.read(buffer, MAX_PAYLOAD_SIZE);
+                            std::streamsize bytes_read = file.gcount();
+                            if (bytes_read > 0) {
+                                Packet response;
+                                response.type = PACKET_TYPE_DATA;
+                                response.seqn = seqn++;
+                                response.length = bytes_read;
+                                std::memcpy(response.payload, buffer, bytes_read);
+                                send_packet(client_socket, response);
+                            }
+                        }
+                        // Send a zero-length packet to indicate end of file
+                        Packet end_pkt;
+                        end_pkt.type = PACKET_TYPE_END;
+                        end_pkt.seqn = seqn;
+                        end_pkt.length = 0;
+                        send_packet(client_socket, end_pkt);
                     } else {
                         const char* reply = "Erro ao abrir o arquivo.";
-                        response.length = strlen(reply);
                         std::memcpy(response.payload, reply, response.length);
+                        response.length = strlen(reply);
+                        send_packet(client_socket, response);
                     }
                 } else {
                     const char* reply = "Arquivo não encontrado.";
-                    response.length = strlen(reply);
                     std::memcpy(response.payload, reply, response.length);
-                }
+                    response.length = strlen(reply);
+                    send_packet(client_socket, response);
+    }
             } else if (command.rfind("delete", 0) == 0) {
                 std::string filename = command.substr(7);
                 std::string full_path = get_sync_dir(username) + "/" + filename;
@@ -132,15 +152,18 @@ void handle_command_client(int client_socket) {
                     const char* reply = "Arquivo deletado com sucesso.";
                     response.length = strlen(reply);
                     std::memcpy(response.payload, reply, response.length);
+                    send_packet(client_socket, response);
                 } else {
                     const char* reply = "Erro ao deletar o arquivo.";
                     response.length = strlen(reply);
                     std::memcpy(response.payload, reply, response.length);
+                    send_packet(client_socket, response);
             }
             } else {
                 const char* reply = "Comando desconhecido ou não implementado.";
                 response.length = strlen(reply);
                 std::memcpy(response.payload, reply, response.length);
+                send_packet(client_socket, response);
             }
         }
 
@@ -357,7 +380,9 @@ void handle_new_connection(int listener_socket) {
             int watch_client_fd = accept(watch_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
 
             // Detach watchers for command and watcher as before
-            std::thread(handle_command_client, cmd_client_fd).detach();
+            std::thread([cmd_client_fd, username]() {
+                handle_command_client(cmd_client_fd, username);
+            }).detach();
             std::thread(handle_watcher_client, watch_client_fd).detach();
 
             // Start a thread that loops and handles multiple file uploads

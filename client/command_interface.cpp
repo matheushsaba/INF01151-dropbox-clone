@@ -7,8 +7,8 @@
 #include "command_interface.hpp"
 #include <unistd.h>         // for close(), shutdown()
 #include <sys/socket.h>     // for SHUT_RDWR
-#include <packet.h>
-#include "FileInfo.hpp"
+#include "../common/packet.h"
+#include "../common/FileInfo.hpp"
 #include "../common/common.hpp"
 
 //pointers to the client functions, initialized by init_command_callbacks
@@ -75,12 +75,12 @@ void handle_download(const std::vector<std::string>& args) {
 void handle_list_server(const std::vector<std::string>& args){
     // Format:  list_server|<username>
     std::vector<FileInfo> files = get_server_sync_dir();
-    list_files_with_mac(files);
+    common::list_files_with_mac(files);
 }
 
 void handle_list_client(const std::vector<std::string>& args) {
-    std::vector<FileInfo> files;
-    files = list_client_sync_dir();
+    std::vector<FileInfo> files = list_client_sync_dir();
+    common::list_files_with_mac(files);
 }
 
 void handle_delete(const std::vector<std::string>& args) {

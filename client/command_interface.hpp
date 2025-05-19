@@ -1,6 +1,8 @@
 #pragma once
 #include <string>
 #include <functional>
+#include <vector>
+#include "../common/FileInfo.hpp"
 
 std::string move_file_to_sync_dir(const std::string& source_path);
 std::string download_from_sync_dir(const std::string& filename);

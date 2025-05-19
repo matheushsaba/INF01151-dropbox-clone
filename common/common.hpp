@@ -1,6 +1,8 @@
 #pragma once
 #include <string>
 #include <filesystem>
+#include <vector>
+#include "FileInfo.hpp"
 
 namespace common {
 

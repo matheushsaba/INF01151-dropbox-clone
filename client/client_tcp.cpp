@@ -18,7 +18,7 @@
 #include <sys/inotify.h>
 #include <map> 
 #include <utime.h>
-#include "FileInfo.hpp"
+#include "../common/FileInfo.hpp"
 
 extern void connect_to_port(int& socket_fd, int port);
 extern int file_socket;
@@ -82,12 +82,12 @@ void send_command(const std::string& cmd) {
         perror("ERROR sending command packet"); return;
     }
 
-    Packet resp{};
-    if (!recv_packet(command_socket, resp)) {
-        perror("ERROR receiving command response"); return;
-    }
-    std::cout << "Server response: "
-              << std::string(resp.payload, resp.length) << '\n';
+    // Packet resp{};
+    // if (!recv_packet(command_socket, resp)) {
+    //     perror("ERROR receiving command response"); return;
+    // }
+    // std::cout << "Server response: "
+    //           << std::string(resp.payload, resp.length) << '\n';
 }
 
 void send_exit_command() {
@@ -229,12 +229,21 @@ std::string get_sync_dir()
 std::vector<FileInfo> list_client_sync_dir()
 {
     std::string sync_dir = get_sync_dir();
-    std::cout << "Arquivos no diretório de sincronização:\n";
+    std::vector<FileInfo> files;
+
     for (const auto& entry : std::filesystem::directory_iterator(sync_dir)) {
         if (entry.is_regular_file()) {
-            std::cout << " - " << entry.path().filename().string() << '\n';
+            struct stat st{};
+            if (::stat(entry.path().c_str(), &st) == 0) {
+                FileInfo info{};
+                strncpy(info.name, entry.path().filename().string().c_str(), sizeof(info.name) - 1);
+                info.mtime = st.st_mtime;
+                info.ctime = st.st_ctime;
+                files.push_back(info);
+            }
         }
     }
+    return files;
 }
 
 std::vector<FileInfo> get_server_sync_dir() {
@@ -242,13 +251,15 @@ std::vector<FileInfo> get_server_sync_dir() {
     send_command(cmd);       
 
     std::vector<char> buffer;
+    Packet pkt{};
+    std::cout << "Receiving file list from server...\n";
     while (true) {
-        Packet pkt;
         if (!recv_packet(command_socket, pkt)) {
             std::cout << "Erro ao receber resposta do servidor.\n";
-            return;
-        }
-        if (pkt.length == 0) break; // End of transmission
+            return {};
+        };
+        if (pkt.type == PACKET_TYPE_END) break; // End of transmission
+        if (pkt.type != PACKET_TYPE_DATA) continue;
         buffer.insert(buffer.end(), pkt.payload, pkt.payload + pkt.length);
     }
 
@@ -347,55 +358,32 @@ void watch_sync_dir_inotify() {
 void sync_with_server() {
     std::string sync_dir = get_sync_dir();
     std::cout << "Syncing with server...\n";
-    
-    std::string cmd = "list_server|" + username;
-    send_command(cmd);
-    Packet resp{};
-    recv_packet(command_socket, resp);
-    std::string msg(resp.payload, resp.length);
 
-    std::map<std::string, time_t> server_files;
-    std::istringstream iss(msg);
-    std::string line, filename;
-    time_t mtime = 0;
-    while (std::getline(iss, line)) {
-        if (line.rfind("Nome: ", 0) == 0) {
-            filename = line.substr(6);
-        } else if (line.rfind("  Modificado (mtime): ", 0) == 0) {
-            mtime = std::stol(line.substr(22));
-            server_files[filename] = mtime;
-        }
+    // Get file lists
+    std::vector<FileInfo> server_files = get_server_sync_dir();
+    std::vector<FileInfo> local_files = list_client_sync_dir();
+
+    // Build lookup for local files
+    std::unordered_map<std::string, FileInfo> local_map;
+    for (const auto& info : local_files) {
+        local_map[info.name] = info;
     }
 
-    std::map<std::string, time_t> local_files;
-    for (const auto& entry : std::filesystem::directory_iterator(sync_dir)) {
-        if (!entry.is_regular_file()) continue;
-        struct stat st{};
-        if (::stat(entry.path().c_str(), &st) == 0) {
-            local_files[entry.path().filename().string()] = st.st_mtime;
+    // For each server file, check if missing or outdated locally
+    for (const auto& srv_info : server_files) {
+        auto it = local_map.find(srv_info.name);
+        bool need_pull = false;
+        if (it == local_map.end()) {
+            need_pull = true; // missing locally
+        } else if (it->second.mtime < srv_info.mtime) {
+            need_pull = true; // outdated locally
         }
-    }
-
-    // Compare and pull changed/missing files from server
-    for (const auto& [srv_file, srv_mtime] : server_files) {
-        auto it = local_files.find(srv_file);
-        if (it == local_files.end() || it->second < srv_mtime) {
-            std::cout << "Pulling updated file from server: " << srv_file << std::endl;
-            // TODO: Implement download logic here, e.g.:
-            send_command("download|" + srv_file);
-            Packet file_resp{};
-            recv_packet(command_socket, file_resp);
-
-            // Save file to sync_dir
-            std::string local_path = sync_dir + "/" + srv_file;
-            std::ofstream ofs(local_path, std::ios::binary | std::ios::trunc);
-            ofs.write(file_resp.payload, file_resp.length);
-            ofs.close();
-
-            struct utimbuf new_times;
-            new_times.actime = srv_mtime;   // access time
-            new_times.modtime = srv_mtime;  // modification time
-            utime(local_path.c_str(), &new_times);
+        if (need_pull) {
+            std::cout << "Pulling updated file from server: " << srv_info.name << std::endl;
+            // TODO: Implement download logic here
+            send_command("download|" + std::string(srv_info.name));
+            
+            // receive file and save to sync_dir
         }
     }
 }
