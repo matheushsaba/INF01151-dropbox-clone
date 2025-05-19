@@ -235,17 +235,17 @@ void handle_file_client(int client_socket)
     while (true) {                               // ❶ laço externo = 1-conexão / N-arquivos
         /* ---------- 1. Cabeçalho “putfile|<user>|<fname>” ---------- */
         if (!recv_packet(client_socket, pkt)) {          // EOF ou erro → fecha conexão
-            std::cerr << "Conexão encerrada pelo cliente.\n";
+            std::cerr << "End of connection.\n";
             break;
         }
         if (pkt.type != PACKET_TYPE_CMD) {               // protocolo inesperado
-            std::cerr << "Tipo de pacote inválido.\n";
+            std::cerr << "Invalid packet type.\n";
             break;
         }
 
         std::string header(pkt.payload, pkt.length);
         if ((header.rfind("putfile|", 0) != 0) && header.rfind("delfile|", 0) != 0) {          // qualquer outro comando → encerra
-            std::cerr << "Comando desconhecido: " << header << '\n';
+            std::cerr << "Malformed header: " << header << '\n';
             break;
         }
 
@@ -253,7 +253,7 @@ void handle_file_client(int client_socket)
         size_t p1 = header.find('|');
         size_t p2 = header.find('|', p1 + 1);
         if (p1 == std::string::npos || p2 == std::string::npos) {
-            std::cerr << "Cabeçalho malformado: " << header << '\n';
+            std::cerr << "Malformed header: " << header << '\n';
             break;
         }
         std::string username = header.substr(p1 + 1, p2 - p1 - 1);
@@ -265,12 +265,12 @@ void handle_file_client(int client_socket)
             std::lock_guard<std::mutex> lock(file_mutex);
             if (std::filesystem::exists(full_path)) {
                 if (std::filesystem::remove(full_path)) {
-                    std::cout << "[DELETE] " << username << '/' << filename << " removido.\n";
+                    std::cout << "[DELETE] " << username << '/' << filename << " removed.\n";
                 } else {
-                    std::cerr << "Erro ao remover " << full_path << '\n';
+                    std::cerr << "Error removing " << full_path << '\n';
                 }
             } else {
-                std::cerr << "Arquivo para remover não encontrado: " << full_path << '\n';
+                std::cerr << "File to delete not found: " << full_path << '\n';
             }
             goto close_connection; 
         }
@@ -278,7 +278,7 @@ void handle_file_client(int client_socket)
             std::lock_guard<std::mutex> lock(file_mutex);   // protege criação do dir/arquivo
             std::ofstream out(full_path, std::ios::binary);
             if (!out.is_open()) {
-                std::cerr << "Não foi possível criar " << full_path << '\n';
+                std::cerr << "Not possible to create " << full_path << '\n';
                 break;
             }
 
@@ -287,20 +287,20 @@ void handle_file_client(int client_socket)
             /* ---------- 3. Blocos DATA até length==0 ---------- */
             while (true) {
                 if (!recv_packet(client_socket, pkt)) {      // drop inesperado
-                    std::cerr << "Conexão perdida durante upload.\n";
+                    std::cerr << "Connection lost during upload.\n";
                     goto close_connection;                        // sai do dois níveis
                 }
                 if (pkt.type != PACKET_TYPE_DATA) {
-                    std::cerr << "Esperava DATA, recebi outro tipo.\n";
+                    std::cerr << "Got a type other than DATA.\n";
                     goto close_connection;
                 }
                 if (pkt.length == 0) {                       // marcador EOF
-                    std::cout << "Upload concluído (" << filename << ").\n";
+                    std::cout << "Upload successful (" << filename << ").\n";
                     break;                                   // volta ao laço externo p/ próximo arquivo
                 }
                 out.write(pkt.payload, pkt.length);
                 if (!out) {
-                    std::cerr << "Erro de escrita em disco.\n";
+                    std::cerr << "Error writing at disk.\n";
                     goto close_connection;
                 }
             }

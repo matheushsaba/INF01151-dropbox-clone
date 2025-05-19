@@ -68,7 +68,7 @@ void handle_download(const std::vector<std::string>& args) {
 
     std::string result = download_from_sync_dir(filename);
     if (result.empty()) {
-        std::cout << "Falha no download.\n";
+        std::cout << "Failed download.\n";
     }
 }
 
@@ -90,10 +90,10 @@ void handle_delete(const std::vector<std::string>& args) {
     }
 
     const std::string& filename = args[0];
-    std::cout << "Deletando arquivo: " << filename << "\n";
+    std::cout << "Deleting file: " << filename << "\n";
 
     if (!delete_from_sync_dir(filename)) {
-        std::cout << "Falha ao deletar o arquivo.\n";
+        std::cout << "Deleting file failed.\n";
     }
 }
 

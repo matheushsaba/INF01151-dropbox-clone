@@ -44,13 +44,13 @@ std::string ensure_sync_dir(const fs::path& base,
 void list_files_with_mac(const std::vector<FileInfo>& files)
 {
     for (const auto& info : files) {
-        std::cout << "Nome: " << info.name << '\n'
-                  << "  Modificado (mtime): " << info.mtime << '\n'
-                  << "  Criado (ctime):     " << info.ctime << '\n'
+        std::cout << "Name: " << info.name << '\n'
+                  << "  Modified (mtime): " << info.mtime << '\n'
+                  << "  Created (ctime):     " << info.ctime << '\n'
                   << "-------------------------------------------------------------\n";
     }
     if (files.empty()) {
-        std::cout << "(nenhum arquivo encontrado)\n";
+        std::cout << "(no file found)\n";
     }
 }
 
