@@ -2,6 +2,8 @@
 #include <unistd.h>     // for close()
 #include <sys/socket.h> // for shutdown()
 
+std::map<std::string, UserSessionControl> user_controls;
+
 void session_manager_register(SessionManager& manager, const std::string& username, int cmd_fd, int watch_fd) {
     auto session = std::make_shared<UserSession>();
     session->cmd_socket = cmd_fd;

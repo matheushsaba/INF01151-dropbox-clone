@@ -229,16 +229,15 @@ void handle_new_connection(int listener_socket) {
             std::string username(pkt.payload, pkt.length);
             std::cout << "🔗 Connection attempt from user: " << username << std::endl;
 
-            if (!session_manager_try_connect(session_manager, username, client_fd)) {
-                std::cerr << "❌ Max devices connected for user: " << username << '\n';
-                Packet deny{};
-                deny.type = PACKET_TYPE_ACK;
-                std::string msg = "DENY: Max of 2 devices already connected.";
-                deny.length = msg.size();
-                memcpy(deny.payload, msg.c_str(), deny.length);
-                send_packet(client_fd, deny);
-                close(client_fd);  // Always close port 4000 after reply
-                return;
+            // Wait here if more than 2 devices are already active
+            auto& ctrl = user_controls[username];
+            {
+                std::unique_lock<std::mutex> lock(ctrl.mtx);
+                while (ctrl.active_sessions >= 2) {
+                    std::cout << "⏳ Waiting for slot for user: " << username << '\n';
+                    ctrl.cv.wait(lock);
+                }
+                ctrl.active_sessions++;
             }
 
             // Send ACK first
@@ -285,8 +284,17 @@ void handle_new_connection(int listener_socket) {
             // Detach watchers for command and watcher as before
             // std::thread(handle_command_client, cmd_client_fd).detach();
 
-            std::thread([cmd_client_fd, username]{
-                    handle_command_client(cmd_client_fd, username);
+            std::thread([cmd_client_fd, username]() {
+                handle_command_client(cmd_client_fd, username);
+
+                // Cleanup on disconnect
+                auto& ctrl = user_controls[username];
+                {
+                    std::lock_guard<std::mutex> lock(ctrl.mtx);
+                    ctrl.active_sessions--;
+                }
+                ctrl.cv.notify_one(); // Wake up one blocked connection
+                std::cout << "👋 Session ended for " << username << '\n';
             }).detach();
 
             std::thread(handle_watcher_client, watch_client_fd).detach();

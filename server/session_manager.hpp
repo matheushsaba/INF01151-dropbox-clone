@@ -6,11 +6,21 @@
 #include <vector>
 #include <algorithm>
 #include <map>
+#include <condition_variable>
+
 
 struct UserSession {
     int cmd_socket;
     int watch_socket;
 };
+
+struct UserSessionControl {
+    std::mutex mtx;
+    std::condition_variable cv;
+    int active_sessions = 0;
+};
+
+extern std::map<std::string, UserSessionControl> user_controls;
 
 struct SessionManager {
     std::mutex sessions_mtx;
