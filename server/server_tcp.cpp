@@ -17,7 +17,7 @@
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
 
-static SessionManager session_manager; 
+static SessionManager session_manager;
 
 std::string get_sync_dir(const std::string& username) {
     namespace fs = std::filesystem;
@@ -52,7 +52,7 @@ void handle_command_client(int client_socket, const std::string& username)
             memcpy(resp.payload, bye, resp.length);
             send_packet(client_socket, resp);              // final ACK
 
-            session_manager.close_session_by_cmd_fd(client_socket);
+            session_manager_close_by_cmd_fd(session_manager, client_socket);
 
             // shutdown(client_socket, SHUT_RDWR);
             // close   (client_socket);
@@ -229,7 +229,7 @@ void handle_new_connection(int listener_socket) {
             std::string username(pkt.payload, pkt.length);
             std::cout << "🔗 Connection attempt from user: " << username << std::endl;
 
-            if (!session_manager.try_connect(username, client_fd)) {
+            if (!session_manager_try_connect(session_manager, username, client_fd)) {
                 std::cerr << "❌ Max devices connected for user: " << username << '\n';
                 Packet deny{};
                 deny.type = PACKET_TYPE_ACK;
@@ -280,7 +280,7 @@ void handle_new_connection(int listener_socket) {
             int cmd_client_fd   = accept(cmd_sock,   reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
             int watch_client_fd = accept(watch_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
 
-            session_manager.register_session(username, cmd_client_fd, watch_client_fd);
+            session_manager_register(session_manager, username, cmd_client_fd, watch_client_fd);
 
             // Detach watchers for command and watcher as before
             // std::thread(handle_command_client, cmd_client_fd).detach();
