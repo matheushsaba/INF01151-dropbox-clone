@@ -37,43 +37,7 @@ std::string get_sync_dir(const std::string& username) {
 // Function to deal with simple command messages
 void handle_command_client(int client_socket) {
     Packet pkt;
-
-    //receive first packet: initial handshake
-    if (!recv_packet(client_socket, pkt) || pkt.type != PACKET_TYPE_CMD) {
-        std::cerr << "Error with the initial handshake.\n";
-        close(client_socket);
-        return;
-    }
-
-    std::string command(pkt.payload, pkt.length);
-    if (command.rfind("hello|", 0) != 0) {
-        std::cerr << "Received: " << command << "\n";
-        close(client_socket);
-        return;
-    }
-
-    std::string username = command.substr(6);
-
-    if (!session_manager.try_connect(username)) {
-        std::cerr << "Max device connection exceeded for " << username << '\n';
-        Packet deny{};
-        deny.type = PACKET_TYPE_ACK;
-        std::string msg = "DENY: Max of 2 devices already connected.";
-        deny.length = msg.size();
-        memcpy(deny.payload, msg.c_str(), deny.length);
-        send_packet(client_socket, deny);
-        close(client_socket);
-        return;
-    }
-
-    // success ACK
-    Packet ack{};
-    ack.type = PACKET_TYPE_ACK;
-    std::string msg = "OK";
-    ack.length = msg.size();
-    memcpy(ack.payload, msg.c_str(), ack.length);
-    send_packet(client_socket, ack);
-
+    
     while(true) {
 
         if (!recv_packet(client_socket, pkt)) {
@@ -113,9 +77,6 @@ void handle_command_client(int client_socket) {
 
         send_packet(client_socket, response);
     }
-    session_manager.disconnect(username);
-    close(client_socket);
-
 }
 
 // Listens for updates, could monitor for file changes
@@ -275,7 +236,7 @@ void handle_new_connection(int listener_socket) {
             std::string username(pkt.payload, pkt.length);
             std::cout << "🔗 Connection attempt from user: " << username << std::endl;
 
-            if (!session_manager.try_connect(username)) {
+            if (!session_manager.try_connect(username, client_fd)) {
                 std::cerr << "❌ Max devices connected for user: " << username << '\n';
                 Packet deny{};
                 deny.type = PACKET_TYPE_ACK;
@@ -325,8 +286,7 @@ void handle_new_connection(int listener_socket) {
             socklen_t tmp_len = sizeof(tmp);
             int cmd_client_fd   = accept(cmd_sock,   reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
             int watch_client_fd = accept(watch_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
-            // int file_client_fd  = accept(file_sock,  reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
-            
+
             // Detach watchers for command and watcher as before
             std::thread(handle_command_client, cmd_client_fd).detach();
             std::thread(handle_watcher_client, watch_client_fd).detach();
@@ -347,13 +307,8 @@ void handle_new_connection(int listener_socket) {
 
             close(cmd_sock);
             close(watch_sock);
-            // close(file_sock);
-
             std::cout << "✅ User " << username << " fully connected (CMD/WATCH/FILE sockets established)\n";
 
-            std::thread(handle_command_client, cmd_client_fd).detach();
-            std::thread(handle_watcher_client, watch_client_fd).detach();
-            // std::thread(handle_file_client,    file_client_fd).detach();
         }).detach();
     }
 }

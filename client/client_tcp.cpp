@@ -21,11 +21,6 @@ extern void connect_to_port(int& socket_fd, int port);
 extern int file_socket;
 extern std::string hostname;
 
-// constexpr int PORT = 4000;
-
-constexpr int COMMAND_PORT = 4000;
-constexpr int WATCHER_PORT = 4001;
-constexpr int FILE_PORT = 4002;
 constexpr int NAME_MAX = 255;
 
 int dynamic_file_port = -1;
@@ -102,19 +97,6 @@ void send_exit_command() {
     std::memcpy(pkt.payload, cmd.c_str(), pkt.length);
     /* ignore ACK – we’re quitting anyway */
     send_packet(command_socket, pkt);
-}
-
-void start_watcher() {
-    std::thread([]() {
-        char buffer[256]{};
-        while (true) {
-            if (read(watcher_socket, buffer, 255) < 0) {
-                perror("ERROR reading from watcher socket");
-                break;
-            }
-            std::cout << "Watcher update: " << buffer << std::endl;
-        }
-    }).detach(); // Detach the thread to run independently
 }
 
 void send_file(const std::string& file_path) {
@@ -296,6 +278,7 @@ void watch_sync_dir_inotify() {
                     if (std::filesystem::is_regular_file(filepath)) {
                         // // Reconnect to the file transfer port (4002) before each upload
                         connect_to_port(file_socket, dynamic_file_port);
+                        std::cout << "✅ Connected to file socket on port " << dynamic_file_port << '\n';
                         send_file(filepath); // Upload the file
                         shutdown(file_socket, SHUT_RDWR);
                         close(file_socket);
@@ -384,7 +367,6 @@ int main(int argc, char* argv[]) {
 
     int command_port = std::stoi(ports_str.substr(0, p1));
     int watcher_port = std::stoi(ports_str.substr(p1 + 1, p2 - p1 - 1));
-    // int file_port    = std::stoi(ports_str.substr(p2 + 1));
     dynamic_file_port = std::stoi(ports_str.substr(p2 + 1));
 
     connect_to_port(command_socket, command_port);
@@ -393,13 +375,11 @@ int main(int argc, char* argv[]) {
     connect_to_port(watcher_socket, watcher_port);
     std::cout << "✅ Connected to watcher socket on port " << watcher_port << '\n';
 
-    // connect_to_port(file_socket, dynamic_file_port);
-    // std::cout << "✅ Connected to file socket on port " << dynamic_file_port << '\n';
+    // The file port only receives a connection reuest when a file is sent
 
     std::string g_sync_dir = get_sync_dir();
     std::cout << "Local sync directory: " << g_sync_dir << '\n';
 
-    start_watcher();
     std::thread inotify_thread(watch_sync_dir_inotify);
 
     init_command_callbacks(send_command, send_file);
