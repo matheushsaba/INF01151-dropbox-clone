@@ -105,7 +105,7 @@ void send_exit_command() {
 void send_file(const std::string& file_path) {
     std::ifstream file(file_path, std::ios::binary);
     if (!file.is_open()) {
-        std::cerr << "Erro ao abrir arquivo: " << file_path << "\n";
+        std::cerr << "Error opening file " << file_path << "\n";
         return;
     }
 
@@ -120,11 +120,11 @@ void send_file(const std::string& file_path) {
     std::memcpy(header_pkt.payload, header.c_str(), header_pkt.length);
 
     if (!send_packet(file_socket, header_pkt)) {
-        std::cerr << "Erro ao enviar cabeçalho do upload\n";
+        std::cerr << "Error sending packet header on upload\n";
         return;
     }
 
-    std::cout << "Enviando arquivo '" << filename << "' como usuário '" << username << "'\n";
+    std::cout << "Sending file '" << filename << "' as user '" << username << "'\n";
 
     char buffer[MAX_PAYLOAD_SIZE];
     int seqn = 1;
@@ -137,7 +137,7 @@ void send_file(const std::string& file_path) {
         std::memcpy(data_pkt.payload, buffer, data_pkt.length);
 
         if (!send_packet(file_socket, data_pkt)) {
-            std::cerr << "Erro ao enviar pacote de dados\n";
+            std::cerr << "Error sending package data\n";
             break;
         }
     }
@@ -148,7 +148,7 @@ void send_file(const std::string& file_path) {
     data_pkt.length = 0;
     send_packet(file_socket, data_pkt);
 
-    std::cout << "Upload concluído com sucesso.\n";
+    std::cout << "Upload successful.\n";
 }
 
 // Moves a file to the user's sync directory.
@@ -158,7 +158,7 @@ std::string move_file_to_sync_dir(const std::string& source_path) {
 
     fs::path src_path(source_path);
     if (!fs::exists(src_path)) {
-        std::cerr << "Arquivo não encontrado: " << source_path << '\n';
+        std::cerr << "File not found: " << source_path << '\n';
         return "";
     }
 
@@ -168,11 +168,11 @@ std::string move_file_to_sync_dir(const std::string& source_path) {
     std::error_code ec;
     fs::copy_file(src_path, dest_path, fs::copy_options::overwrite_existing, ec);
     if (ec) {
-        std::cerr << "Erro ao copiar para a pasta de sincronização: " << ec.message() << '\n';
+        std::cerr << "Error copying to sync_dir: " << ec.message() << '\n';
         return "";
     }
 
-    std::cout << "Arquivo movido para a pasta de sincronização: " << dest_path << '\n';
+    std::cout << "File moved to sync_dir: " << dest_path << '\n';
     return dest_path.string();
 }
 
@@ -183,18 +183,18 @@ std::string download_from_sync_dir(const std::string& filename) {
     fs::path target_path = fs::current_path() / filename;
 
     if (!fs::exists(sync_path)) {
-        std::cerr << "Arquivo não encontrado no diretório de sincronização: " << sync_path << '\n';
+        std::cerr << "File not found at sync_dir: " << sync_path << '\n';
         return "";
     }
 
     std::error_code ec;
     fs::copy_file(sync_path, target_path, fs::copy_options::overwrite_existing, ec);
     if (ec) {
-        std::cerr << "Erro ao copiar arquivo para o diretório atual: " << ec.message() << '\n';
+        std::cerr << "Error copying file to current directory: " << ec.message() << '\n';
         return "";
     }
 
-    std::cout << "Arquivo copiado para o diretório atual: " << target_path << '\n';
+    std::cout << "File copied to current directory: " << target_path << '\n';
     return target_path.string();
 }
 
@@ -204,18 +204,18 @@ bool delete_from_sync_dir(const std::string& filename) {
     fs::path target_path = fs::path(get_sync_dir()) / filename;
 
     if (!fs::exists(target_path)) {
-        std::cerr << "Arquivo não encontrado no diretório de sincronização: " << target_path << '\n';
+        std::cerr << "File not found at sync_dir: " << target_path << '\n';
         return false;
     }
 
     std::error_code ec;
     fs::remove(target_path, ec);
     if (ec) {
-        std::cerr << "Erro ao deletar o arquivo: " << ec.message() << '\n';
+        std::cerr << "Error deleting the file: " << ec.message() << '\n';
         return false;
     }
 
-    std::cout << "Arquivo removido: " << target_path << '\n';
+    std::cout << "File removed: " << target_path << '\n';
     return true;
 }
 
@@ -255,7 +255,7 @@ std::vector<FileInfo> get_server_sync_dir() {
     std::cout << "Receiving file list from server...\n";
     while (true) {
         if (!recv_packet(command_socket, pkt)) {
-            std::cout << "Erro ao receber resposta do servidor.\n";
+            std::cout << "Error receiving response from server.\n";
             return {};
         };
         if (pkt.type == PACKET_TYPE_END) break; // End of transmission
