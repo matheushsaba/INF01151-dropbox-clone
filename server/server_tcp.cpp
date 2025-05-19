@@ -37,43 +37,7 @@ std::string get_sync_dir(const std::string& username) {
 // Function to deal with simple command messages
 void handle_command_client(int client_socket) {
     Packet pkt;
-
-    //receive first packet: initial handshake
-    if (!recv_packet(client_socket, pkt) || pkt.type != PACKET_TYPE_CMD) {
-        std::cerr << "Error with the initial handshake.\n";
-        close(client_socket);
-        return;
-    }
-
-    std::string command(pkt.payload, pkt.length);
-    if (command.rfind("hello|", 0) != 0) {
-        std::cerr << "Received: " << command << "\n";
-        close(client_socket);
-        return;
-    }
-
-    std::string username = command.substr(6);
-
-    if (!session_manager.try_connect(username, client_socket)) {
-        std::cerr << "Max device connection exceeded for " << username << '\n';
-        Packet deny{};
-        deny.type = PACKET_TYPE_ACK;
-        std::string msg = "DENY: Max of 2 devices already connected.";
-        deny.length = msg.size();
-        memcpy(deny.payload, msg.c_str(), deny.length);
-        send_packet(client_socket, deny);
-        close(client_socket);
-        return;
-    }
-
-    // success ACK
-    Packet ack{};
-    ack.type = PACKET_TYPE_ACK;
-    std::string msg = "OK";
-    ack.length = msg.size();
-    memcpy(ack.payload, msg.c_str(), ack.length);
-    send_packet(client_socket, ack);
-
+    
     while(true) {
 
         if (!recv_packet(client_socket, pkt)) {
@@ -113,9 +77,6 @@ void handle_command_client(int client_socket) {
 
         send_packet(client_socket, response);
     }
-    session_manager.disconnect(username, client_socket);
-    close(client_socket);
-
 }
 
 // Listens for updates, could monitor for file changes
