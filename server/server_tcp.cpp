@@ -15,6 +15,7 @@
 #include "session_manager.hpp"
 #include <map>
 #include "../common/FileInfo.hpp"
+#include <sys/inotify.h>
 
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
@@ -172,23 +173,55 @@ void handle_command_client(int client_socket, const std::string& username) {
 }
 
 // Listens for updates, could monitor for file changes
-void handle_watcher_client(int client_socket) {
-    char buffer[256]{};
-
-    while (true) {
-        int n = read(client_socket, buffer, 255);
-        if (n <= 0) {
-            perror("ERROR reading from watcher socket");
-            break;
-        }
-
-        std::cout << "Watcher update: " << buffer << std::endl;
-        
-        // Here you would implement the logic to check for changes
-        // and notify the client if there are any files to sync
+void handle_watcher_client(int client_socket, const std::string& dir) {
+    int fd = inotify_init1(IN_NONBLOCK);
+    if (fd < 0) {
+        std::cerr << "[watcher] Failed to initialize inotify\n";
+        return;
     }
 
-    close(client_socket);
+    int wd = inotify_add_watch(fd, dir.c_str(), IN_CREATE | IN_MODIFY | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
+    if (wd < 0) {
+        std::cerr << "[watcher] Failed to add watch for " << dir << "\n";
+        close(fd);
+        return;
+    }
+
+    std::cout << "[watcher] Watching directory: " << dir << "\n";
+
+    char buf[4096] __attribute__ ((aligned(__alignof__(struct inotify_event))));
+    ssize_t len;
+
+    while (true) {
+        len = read(fd, buf, sizeof(buf));
+        if (len <= 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            continue;
+        }
+
+        for (char* ptr = buf; ptr < buf + len; ) {
+            struct inotify_event* event = (struct inotify_event*) ptr;
+            if (event->len) {
+                Packet notify_pkt{};
+                notify_pkt.type = PACKET_TYPE_NOTIFY; // Define this in your protocol
+                std::string msg = "Change: ";
+                if (event->mask & IN_CREATE) msg += "Created ";
+                if (event->mask & IN_MODIFY) msg += "Modified ";
+                if (event->mask & IN_DELETE) msg += "Deleted ";
+                if (event->mask & IN_MOVED_FROM) msg += "Moved from ";
+                if (event->mask & IN_MOVED_TO) msg += "Moved to ";
+                msg += event->name;
+                notify_pkt.length = msg.size();
+                memcpy(notify_pkt.payload, msg.c_str(), notify_pkt.length);
+                std::cout << "sending notify: " << msg << std::endl;
+                send_packet(client_socket, notify_pkt);
+            }
+            ptr += sizeof(struct inotify_event) + event->len;
+        }
+    }
+
+    inotify_rm_watch(fd, wd);
+    close(fd);
 }
 
 void handle_file_client(int client_socket)
@@ -383,7 +416,9 @@ void handle_new_connection(int listener_socket) {
             std::thread([cmd_client_fd, username]() {
                 handle_command_client(cmd_client_fd, username);
             }).detach();
-            std::thread(handle_watcher_client, watch_client_fd).detach();
+            std::thread([watch_client_fd, username]() {
+                handle_watcher_client(watch_client_fd, get_sync_dir(username));
+            }).detach();
 
             // Start a thread that loops and handles multiple file uploads
             std::thread([file_sock]() {

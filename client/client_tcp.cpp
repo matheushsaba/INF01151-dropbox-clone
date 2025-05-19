@@ -380,10 +380,43 @@ void sync_with_server() {
         }
         if (need_pull) {
             std::cout << "Pulling updated file from server: " << srv_info.name << std::endl;
-            // TODO: Implement download logic here
             send_command("download|" + std::string(srv_info.name));
-            
-            // receive file and save to sync_dir
+
+            // Receive file and save to sync_dir
+            std::string filepath = sync_dir + "/" + srv_info.name;
+            FILE* fp = fopen(filepath.c_str(), "wb");
+            if (!fp) {
+                std::cerr << "Failed to open file for writing: " << filepath << std::endl;
+                continue;
+            }
+
+            Packet pkt{};
+            while (true) {
+                if (!recv_packet(command_socket, pkt)) {
+                    std::cerr << "Error receiving file data from server.\n";
+                    break;
+                }
+                if (pkt.type == PACKET_TYPE_END) break;
+                if (pkt.type != PACKET_TYPE_DATA) continue;
+                fwrite(pkt.payload, 1, pkt.length, fp);
+            }
+            fclose(fp);
+            std::cout << "File received and saved: " << filepath << std::endl;
+        }
+    }
+}
+
+void watch_server_sync(int socket_fd) {
+    while (true) {
+        Packet pkt{};
+        if (!recv_packet(socket_fd, pkt)) {
+            std::cerr << "[watch_server_sync] Error receiving notify packet from server.\n";
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
+        }
+        if (pkt.type == PACKET_TYPE_NOTIFY) {
+            std::cout << "[watch_server_sync] Received server change notification. Syncing...\n";
+            sync_with_server();
         }
     }
 }
@@ -441,8 +474,6 @@ int main(int argc, char* argv[]) {
         std::cerr << "❌ Malformed port message: " << ports_str << '\n';
         return 1;
     }
-    
-    // sync_with_server();
 
     int command_port = std::stoi(ports_str.substr(0, p1));
     int watcher_port = std::stoi(ports_str.substr(p1 + 1, p2 - p1 - 1));
@@ -459,7 +490,10 @@ int main(int argc, char* argv[]) {
     std::string g_sync_dir = get_sync_dir();
     std::cout << "Local sync directory: " << g_sync_dir << '\n';
 
+    sync_with_server();
+
     std::thread inotify_thread(watch_sync_dir_inotify);
+    std::thread(watch_server_sync, watcher_socket).detach();
 
     init_command_callbacks(send_command, send_file);
 

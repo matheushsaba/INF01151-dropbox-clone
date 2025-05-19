@@ -46,7 +46,6 @@ bool recv_packet(int sockfd, Packet& pkt) {
     char header[10];
     int header_size = sizeof(pkt.type) + sizeof(pkt.seqn) + sizeof(pkt.total_size) + sizeof(pkt.length);
     int n = recv(sockfd, header, header_size, MSG_WAITALL);
-    std::cout << "[recv_packet] header recv returned: " << n << std::endl;
     if (n != header_size) {
         perror("recv");
         return false;
@@ -56,7 +55,6 @@ bool recv_packet(int sockfd, Packet& pkt) {
     std::memcpy(&length, header + header_size - sizeof(length), sizeof(length));
 
     if (length > MAX_PAYLOAD_SIZE) {
-        std::cout << "[recv_packet] length > MAX_PAYLOAD_SIZE" << std::endl;
         return false;
     }
 
