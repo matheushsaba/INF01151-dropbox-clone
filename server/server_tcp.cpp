@@ -35,46 +35,42 @@ std::string get_sync_dir(const std::string& username) {
 }
 
 // Function to deal with simple command messages
-void handle_command_client(int client_socket) {
+void handle_command_client(int client_socket, const std::string& username)
+{
     Packet pkt;
-    
-    while(true) {
 
-        if (!recv_packet(client_socket, pkt)) {
-            std::cerr << "Erro ao receber pacote de comando.\n";
-            return;
-        }
-        std::string command(pkt.payload, pkt.length);
-        std::cout << "Command received: " << command << std::endl;
+    while (true) {
+        if (!recv_packet(client_socket, pkt)) break;
 
-        Packet response;
-        response.type = PACKET_TYPE_ACK;
-        response.seqn = pkt.seqn;
-        response.total_size = 0;
+        std::string cmd(pkt.payload, pkt.length);
+        Packet resp{ .type = PACKET_TYPE_ACK, .seqn = pkt.seqn };
 
-        {
-            std::lock_guard<std::mutex> lock(file_mutex);
+        /* ---------------- exit|<user> ---------------- */
+        if (cmd.rfind("exit|", 0) == 0) {
+            const char bye[] = "BYE";
+            resp.length = sizeof bye - 1;
+            memcpy(resp.payload, bye, resp.length);
+            send_packet(client_socket, resp);              // final ACK
 
-            if (command.rfind("list_server", 0) == 0) {
-                std::string username;
-                size_t pos = command.find('|');
-                if (pos != std::string::npos) {
-                    username = command.substr(pos + 1);
-                }
+            session_manager.close_session_by_cmd_fd(client_socket);
 
-                std::string user_dir = get_sync_dir(username);
-                std::string response_data = common::list_files_with_mac(get_sync_dir(username));
-
-                response.length = std::min((int)response_data.size(), MAX_PAYLOAD_SIZE);
-                std::memcpy(response.payload, response_data.c_str(), response.length);
-            } else {
-                const char* reply = "Comando desconhecido ou não implementado.";
-                response.length = strlen(reply);
-                std::memcpy(response.payload, reply, response.length);
-            }
+            // shutdown(client_socket, SHUT_RDWR);
+            // close   (client_socket);
+            return;                                       // kill thread
         }
 
-        send_packet(client_socket, response);
+        /* ---------- list_server|<user> ---------- */
+        if (cmd.rfind("list_server", 0) == 0) {
+            /* … existing code … */
+            send_packet(client_socket, resp);
+            continue;
+        }
+
+        /* ---------- unknown ---------- */
+        const char unk[] = "Comando desconhecido";
+        resp.length = sizeof unk - 1;
+        memcpy(resp.payload, unk, resp.length);
+        send_packet(client_socket, resp);
     }
 }
 
@@ -284,8 +280,15 @@ void handle_new_connection(int listener_socket) {
             int cmd_client_fd   = accept(cmd_sock,   reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
             int watch_client_fd = accept(watch_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
 
+            session_manager.register_session(username, cmd_client_fd, watch_client_fd);
+
             // Detach watchers for command and watcher as before
-            std::thread(handle_command_client, cmd_client_fd).detach();
+            // std::thread(handle_command_client, cmd_client_fd).detach();
+
+            std::thread([cmd_client_fd, username]{
+                    handle_command_client(cmd_client_fd, username);
+            }).detach();
+
             std::thread(handle_watcher_client, watch_client_fd).detach();
 
             // Start a thread that loops and handles multiple file uploads
