@@ -42,7 +42,6 @@ void handle_command_client(int client_socket) {
 
         if (!recv_packet(client_socket, pkt)) {
             std::cerr << "Erro ao receber pacote de comando.\n";
-            close(client_socket);
             return;
         }
         std::string command(pkt.payload, pkt.length);
@@ -95,8 +94,6 @@ void handle_watcher_client(int client_socket) {
         // Here you would implement the logic to check for changes
         // and notify the client if there are any files to sync
     }
-
-    close(client_socket);
 }
 
 void handle_file_client(int client_socket)
