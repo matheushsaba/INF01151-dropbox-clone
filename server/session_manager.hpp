@@ -5,20 +5,31 @@
 #include <memory>
 #include <vector>
 #include <algorithm>
+#include <map>
+#include <condition_variable>
+
 
 struct UserSession {
-    int connected_devices = 0;
+    int cmd_socket;
+    int watch_socket;
+};
+
+struct UserSessionControl {
     std::mutex mtx;
-    std::vector<int> sockets;
+    std::condition_variable cv;
+    int active_sessions = 0;
 };
 
-class SessionManager {
-    public:
-        bool try_connect(const std::string& username, int socket_fd);
-        void disconnect(const std::string& username, int socket_fd);
-        std::vector<int> get_user_sockets(const std::string& username);
+extern std::map<std::string, UserSessionControl> user_controls;
 
-    private:
-        std::unordered_map<std::string, std::shared_ptr<UserSession>> sessions;
-        std::mutex sessions_mtx; // protege o mapa
+struct SessionManager {
+    std::mutex sessions_mtx;
+    std::map<int, std::shared_ptr<UserSession>> sessions_by_cmd_fd;
+    std::map<int, std::string> username_by_cmd_fd;
+    std::map<std::string, int> device_count_by_user;
 };
+
+void session_manager_register(SessionManager& manager, const std::string& username, int cmd_fd, int watch_fd);
+void session_manager_close_by_cmd_fd(SessionManager& manager, int cmd_fd);
+int session_manager_get_connected(SessionManager& manager, const std::string& username);
+bool session_manager_try_connect(SessionManager& manager, const std::string& username, int handshake_fd);

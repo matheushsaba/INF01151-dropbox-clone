@@ -1,61 +1,57 @@
 #include "session_manager.hpp"
+#include <unistd.h>     // for close()
+#include <sys/socket.h> // for shutdown()
 
-bool SessionManager::try_connect(const std::string& username, int socket_fd) {
-    std::shared_ptr<UserSession> session;
+std::map<std::string, UserSessionControl> user_controls;
 
-    {
-        std::lock_guard<std::mutex> lock(sessions_mtx);
-        if (!sessions.count(username)) {
-            sessions[username] = std::make_shared<UserSession>();
-        }
-        session = sessions[username];
-    }
+void session_manager_register(SessionManager& manager, const std::string& username, int cmd_fd, int watch_fd) {
+    auto session = std::make_shared<UserSession>();
+    session->cmd_socket = cmd_fd;
+    session->watch_socket = watch_fd;
 
-    std::lock_guard<std::mutex> lock(session->mtx);
-    if (session->connected_devices >= 2) return false;
-    session->connected_devices++;
-    session->sockets.push_back(socket_fd);
-    return true;
+    std::lock_guard<std::mutex> lock(manager.sessions_mtx);
+
+    manager.sessions_by_cmd_fd[cmd_fd] = session;
+    manager.username_by_cmd_fd[cmd_fd] = username;
+    manager.device_count_by_user[username]++;
 }
 
-void SessionManager::disconnect(const std::string& username, int socket_fd) {
-    std::shared_ptr<UserSession> session;
+void session_manager_close_by_cmd_fd(SessionManager& manager, int cmd_fd) {
+    std::lock_guard<std::mutex> lock(manager.sessions_mtx);
 
-    {
-        std::lock_guard<std::mutex> lock(sessions_mtx);
-        auto it = sessions.find(username);
-        if (it == sessions.end()) return;
-        session = it->second;
-    }
+    auto session_it = manager.sessions_by_cmd_fd.find(cmd_fd);
+    if (session_it == manager.sessions_by_cmd_fd.end()) return;
 
-    bool should_erase = false;
-    {
-        std::lock_guard<std::mutex> lock(session->mtx);
-        
-        if (session->connected_devices > 0) {
-            session->connected_devices--;
-            auto it = std::remove(session->sockets.begin(), session->sockets.end(), socket_fd);
-            session->sockets.erase(it, session->sockets.end());
-            if (session->connected_devices == 0) {
-                should_erase = true;
+    auto session = session_it->second;
+    shutdown(session->cmd_socket, SHUT_RDWR);
+    close(session->cmd_socket);
+    shutdown(session->watch_socket, SHUT_RDWR);
+    close(session->watch_socket);
+
+    manager.sessions_by_cmd_fd.erase(session_it);
+
+    auto user_it = manager.username_by_cmd_fd.find(cmd_fd);
+    if (user_it != manager.username_by_cmd_fd.end()) {
+        std::string username = user_it->second;
+        manager.username_by_cmd_fd.erase(user_it);
+
+        auto count_it = manager.device_count_by_user.find(username);
+        if (count_it != manager.device_count_by_user.end()) {
+            count_it->second--;
+            if (count_it->second <= 0) {
+                manager.device_count_by_user.erase(count_it);
             }
         }
     }
-
-    if (should_erase) {
-        std::lock_guard<std::mutex> lock(sessions_mtx);
-        sessions.erase(username);
-    }
 }
 
-std::vector<int> SessionManager::get_user_sockets(const std::string& username) {
-    std::shared_ptr<UserSession> session;
-    {
-        std::lock_guard<std::mutex> lock(sessions_mtx);
-        auto it = sessions.find(username);
-        if (it == sessions.end()) return {};
-        session = it->second;
-    }
-    std::lock_guard<std::mutex> lock(session->mtx);
-    return session->sockets;
+int session_manager_get_connected(SessionManager& manager, const std::string& username) {
+    std::lock_guard<std::mutex> lock(manager.sessions_mtx);
+    auto it = manager.device_count_by_user.find(username);
+    return (it != manager.device_count_by_user.end()) ? it->second : 0;
+}
+
+bool session_manager_try_connect(SessionManager& manager, const std::string& username, int /*handshake_fd*/) {
+    std::lock_guard<std::mutex> lock(manager.sessions_mtx);
+    return manager.device_count_by_user[username] < 2;
 }
