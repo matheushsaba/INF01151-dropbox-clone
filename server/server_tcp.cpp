@@ -13,6 +13,9 @@
 #include <sys/stat.h>     // stat() for MAC times
 #include "../common/common.hpp"
 #include "session_manager.hpp"
+#include <map>
+#include "../common/FileInfo.hpp"
+#include <sys/inotify.h>
 
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
@@ -40,56 +43,189 @@ void handle_command_client(int client_socket, const std::string& username)
     Packet pkt;
 
     while (true) {
-        if (!recv_packet(client_socket, pkt)) break;
+        if (!recv_packet(client_socket, pkt)) {
+            std::cerr << "Erro ao receber pacote de comando.\n";
+            close(client_socket);
+            return;
+        }
+        std::string command(pkt.payload, pkt.length);
+        std::cout << "Command received: " << command << std::endl;
+        Packet response;
+        response.type = PACKET_TYPE_ACK;
+        response.seqn = pkt.seqn;
+        response.total_size = 0;
+        {
+            std::lock_guard<std::mutex> lock(file_mutex);
+            if (command.rfind("exit|", 0) == 0) {
+                const char bye[] = "BYE";
+                response.length = sizeof bye - 1;
+                memcpy(response.payload, bye, response.length);
+                send_packet(client_socket, response);   
+                session_manager_close_by_cmd_fd(session_manager, client_socket);
+                return;
+            } else if (command.rfind("list_server", 0) == 0) {
+                std::string username;
+                size_t pos = command.find('|');
+                if (pos != std::string::npos) {
+                    username = command.substr(pos + 1);
+                }
 
-        std::string cmd(pkt.payload, pkt.length);
-        Packet resp{ .type = PACKET_TYPE_ACK, .seqn = pkt.seqn };
+                std::string user_dir = get_sync_dir(username);
+                std::vector<FileInfo> file_infos;
 
-        /* ---------------- exit|<user> ---------------- */
-        if (cmd.rfind("exit|", 0) == 0) {
-            const char bye[] = "BYE";
-            resp.length = sizeof bye - 1;
-            memcpy(resp.payload, bye, resp.length);
-            send_packet(client_socket, resp);              // final ACK
+                for (const auto& entry : std::filesystem::directory_iterator(user_dir)) {
+                    if (!entry.is_regular_file()) continue;
+                    struct stat st{};
+                    if (::stat(entry.path().c_str(), &st) == 0) {
+                        FileInfo info{};
+                        strncpy(info.name, entry.path().filename().string().c_str(), sizeof(info.name) - 1);
+                        info.mtime = st.st_mtime;
+                        info.ctime = st.st_ctime;
+                        file_infos.push_back(info);
+                    }
+                }
 
-            session_manager_close_by_cmd_fd(session_manager, client_socket);
+                // Serialize the vector to a buffer
+                const char* data_ptr = reinterpret_cast<const char*>(file_infos.data());
+                size_t bytes_left = file_infos.size() * sizeof(FileInfo);
+                int seqn = pkt.seqn;
+                std::cout << "Sending file_infos to client..." << std::endl;
+                while (bytes_left > 0) {
+                    int chunk_size = std::min((int)bytes_left, MAX_PAYLOAD_SIZE);
+                    if (chunk_size <= 0) break;
+                    Packet response;
+                    response.type = PACKET_TYPE_DATA;
+                    response.seqn = seqn++;
+                    response.length = chunk_size;
+                    std::memcpy(response.payload, data_ptr, chunk_size);
+                    send_packet(client_socket, response);
 
-            // shutdown(client_socket, SHUT_RDWR);
-            // close   (client_socket);
-            return;                                       // kill thread
+                    data_ptr += chunk_size;
+                    bytes_left -= chunk_size;
+                }
+
+                // Optionally, send a zero-length packet to indicate end
+                Packet end_pkt;
+                end_pkt.type = PACKET_TYPE_END;
+                end_pkt.seqn = seqn;
+                end_pkt.length = 0;
+                send_packet(client_socket, end_pkt);
+            } else if (command.rfind("download", 0) == 0) {
+                std::string filename = command.substr(9);
+                std::string full_path = get_sync_dir(username) + "/" + filename;
+
+                if (std::filesystem::exists(full_path)) {
+                    std::ifstream file(full_path, std::ios::binary);
+                    if (file) {
+                        char buffer[MAX_PAYLOAD_SIZE];
+                        int seqn = pkt.seqn;
+                        while (file) {
+                            file.read(buffer, MAX_PAYLOAD_SIZE);
+                            std::streamsize bytes_read = file.gcount();
+                            if (bytes_read > 0) {
+                                Packet response;
+                                response.type = PACKET_TYPE_DATA;
+                                response.seqn = seqn++;
+                                response.length = bytes_read;
+                                std::memcpy(response.payload, buffer, bytes_read);
+                                send_packet(client_socket, response);
+                            }
+                        }
+                        // Send a zero-length packet to indicate end of file
+                        Packet end_pkt;
+                        end_pkt.type = PACKET_TYPE_END;
+                        end_pkt.seqn = seqn;
+                        end_pkt.length = 0;
+                        send_packet(client_socket, end_pkt);
+                    } else {
+                        const char* reply = "Erro ao abrir o arquivo.";
+                        std::memcpy(response.payload, reply, response.length);
+                        response.length = strlen(reply);
+                        send_packet(client_socket, response);
+                    }
+                } else {
+                    const char* reply = "Arquivo não encontrado.";
+                    std::memcpy(response.payload, reply, response.length);
+                    response.length = strlen(reply);
+                    send_packet(client_socket, response);
+    }
+            } else if (command.rfind("delete", 0) == 0) {
+                std::string filename = command.substr(7);
+                std::string full_path = get_sync_dir(username) + "/" + filename;
+
+                if (std::filesystem::remove(full_path)) {
+                    const char* reply = "Arquivo deletado com sucesso.";
+                    response.length = strlen(reply);
+                    std::memcpy(response.payload, reply, response.length);
+                    send_packet(client_socket, response);
+                } else {
+                    const char* reply = "Erro ao deletar o arquivo.";
+                    response.length = strlen(reply);
+                    std::memcpy(response.payload, reply, response.length);
+                    send_packet(client_socket, response);
+            }
+            } else {
+                const char* reply = "Comando desconhecido ou não implementado.";
+                response.length = strlen(reply);
+                std::memcpy(response.payload, reply, response.length);
+                send_packet(client_socket, response);
+            }
         }
 
-        /* ---------- list_server|<user> ---------- */
-        if (cmd.rfind("list_server", 0) == 0) {
-            /* … existing code … */
-            send_packet(client_socket, resp);
-            continue;
-        }
-
-        /* ---------- unknown ---------- */
-        const char unk[] = "Comando desconhecido";
-        resp.length = sizeof unk - 1;
-        memcpy(resp.payload, unk, resp.length);
-        send_packet(client_socket, resp);
+        //send_packet(client_socket, response);
     }
 }
 
 // Listens for updates, could monitor for file changes
-void handle_watcher_client(int client_socket) {
-    char buffer[256]{};
+void handle_watcher_client(int client_socket, const std::string& dir) {
+    int fd = inotify_init1(IN_NONBLOCK);
+    if (fd < 0) {
+        std::cerr << "[watcher] Failed to initialize inotify\n";
+        return;
+    }
+
+    int wd = inotify_add_watch(fd, dir.c_str(), IN_CREATE | IN_MODIFY | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
+    if (wd < 0) {
+        std::cerr << "[watcher] Failed to add watch for " << dir << "\n";
+        close(fd);
+        return;
+    }
+
+    std::cout << "[watcher] Watching directory: " << dir << "\n";
+
+    char buf[4096] __attribute__ ((aligned(__alignof__(struct inotify_event))));
+    ssize_t len;
 
     while (true) {
-        int n = read(client_socket, buffer, 255);
-        if (n <= 0) {
-            perror("ERROR reading from watcher socket");
-            break;
+        len = read(fd, buf, sizeof(buf));
+        if (len <= 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            continue;
         }
 
-        std::cout << "Watcher update: " << buffer << std::endl;
-        
-        // Here you would implement the logic to check for changes
-        // and notify the client if there are any files to sync
+        for (char* ptr = buf; ptr < buf + len; ) {
+            struct inotify_event* event = (struct inotify_event*) ptr;
+            if (event->len) {
+                Packet notify_pkt{};
+                notify_pkt.type = PACKET_TYPE_NOTIFY; // Define this in your protocol
+                std::string msg = "Change: ";
+                if (event->mask & IN_CREATE) msg += "Created ";
+                if (event->mask & IN_MODIFY) msg += "Modified ";
+                if (event->mask & IN_DELETE) msg += "Deleted ";
+                if (event->mask & IN_MOVED_FROM) msg += "Moved from ";
+                if (event->mask & IN_MOVED_TO) msg += "Moved to ";
+                msg += event->name;
+                notify_pkt.length = msg.size();
+                memcpy(notify_pkt.payload, msg.c_str(), notify_pkt.length);
+                std::cout << "sending notify: " << msg << std::endl;
+                send_packet(client_socket, notify_pkt);
+            }
+            ptr += sizeof(struct inotify_event) + event->len;
+        }
     }
+
+    inotify_rm_watch(fd, wd);
+    close(fd);
 }
 
 void handle_file_client(int client_socket)
@@ -282,8 +418,9 @@ void handle_new_connection(int listener_socket) {
             session_manager_register(session_manager, username, cmd_client_fd, watch_client_fd);
 
             // Detach watchers for command and watcher as before
-            // std::thread(handle_command_client, cmd_client_fd).detach();
-
+            std::thread([watch_client_fd, username]() {
+                handle_watcher_client(watch_client_fd, get_sync_dir(username));
+            }).detach();
             std::thread([cmd_client_fd, username]() {
                 handle_command_client(cmd_client_fd, username);
 
@@ -296,8 +433,6 @@ void handle_new_connection(int listener_socket) {
                 ctrl.cv.notify_one(); // Wake up one blocked connection
                 std::cout << "👋 Session ended for " << username << '\n';
             }).detach();
-
-            std::thread(handle_watcher_client, watch_client_fd).detach();
 
             // Start a thread that loops and handles multiple file uploads
             std::thread([file_sock]() {

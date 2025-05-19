@@ -16,6 +16,9 @@
 #include <sys/stat.h>
 #include "../common/common.hpp"
 #include <sys/inotify.h>
+#include <map> 
+#include <utime.h>
+#include "../common/FileInfo.hpp"
 
 extern void connect_to_port(int& socket_fd, int port);
 extern int file_socket;
@@ -79,12 +82,12 @@ void send_command(const std::string& cmd) {
         perror("ERROR sending command packet"); return;
     }
 
-    Packet resp{};
-    if (!recv_packet(command_socket, resp)) {
-        perror("ERROR receiving command response"); return;
-    }
-    std::cout << "Server response: "
-              << std::string(resp.payload, resp.length) << '\n';
+    // Packet resp{};
+    // if (!recv_packet(command_socket, resp)) {
+    //     perror("ERROR receiving command response"); return;
+    // }
+    // std::cout << "Server response: "
+    //           << std::string(resp.payload, resp.length) << '\n';
 }
 
 void send_exit_command() {
@@ -223,9 +226,50 @@ std::string get_sync_dir()
     return cached;
 }
 
-void list_client_sync_dir()
+std::vector<FileInfo> list_client_sync_dir()
 {
-    std::cout << '\n' << common::list_files_with_mac(get_sync_dir());
+    std::string sync_dir = get_sync_dir();
+    std::vector<FileInfo> files;
+
+    for (const auto& entry : std::filesystem::directory_iterator(sync_dir)) {
+        if (entry.is_regular_file()) {
+            struct stat st{};
+            if (::stat(entry.path().c_str(), &st) == 0) {
+                FileInfo info{};
+                strncpy(info.name, entry.path().filename().string().c_str(), sizeof(info.name) - 1);
+                info.mtime = st.st_mtime;
+                info.ctime = st.st_ctime;
+                files.push_back(info);
+            }
+        }
+    }
+    return files;
+}
+
+std::vector<FileInfo> get_server_sync_dir() {
+    std::string cmd = "list_server|" + username;
+    send_command(cmd);       
+
+    std::vector<char> buffer;
+    Packet pkt{};
+    std::cout << "Receiving file list from server...\n";
+    while (true) {
+        if (!recv_packet(command_socket, pkt)) {
+            std::cout << "Erro ao receber resposta do servidor.\n";
+            return {};
+        };
+        if (pkt.type == PACKET_TYPE_END) break; // End of transmission
+        if (pkt.type != PACKET_TYPE_DATA) continue;
+        buffer.insert(buffer.end(), pkt.payload, pkt.payload + pkt.length);
+    }
+
+    size_t count = buffer.size() / sizeof(FileInfo);
+    std::vector<FileInfo> files;
+    const FileInfo* infos = reinterpret_cast<const FileInfo*>(buffer.data());
+    for (size_t i = 0; i < count; ++i) {
+        files.push_back(infos[i]);
+    }
+    return files;
 }
 
 void cleanup_sockets() {            // friendlier shutdown
@@ -311,6 +355,72 @@ void watch_sync_dir_inotify() {
     close(inotify_fd);
 }
 
+void sync_with_server() {
+    std::string sync_dir = get_sync_dir();
+    std::cout << "Syncing with server...\n";
+
+    // Get file lists
+    std::vector<FileInfo> server_files = get_server_sync_dir();
+    std::vector<FileInfo> local_files = list_client_sync_dir();
+
+    // Build lookup for local files
+    std::unordered_map<std::string, FileInfo> local_map;
+    for (const auto& info : local_files) {
+        local_map[info.name] = info;
+    }
+
+    // For each server file, check if missing or outdated locally
+    for (const auto& srv_info : server_files) {
+        auto it = local_map.find(srv_info.name);
+        bool need_pull = false;
+        if (it == local_map.end()) {
+            need_pull = true; // missing locally
+        } else if (it->second.mtime < srv_info.mtime) {
+            need_pull = true; // outdated locally
+        }
+        if (need_pull) {
+            std::cout << "Pulling updated file from server: " << srv_info.name << std::endl;
+            send_command("download|" + std::string(srv_info.name));
+
+            // Receive file and save to sync_dir
+            std::string filepath = sync_dir + "/" + srv_info.name;
+            FILE* fp = fopen(filepath.c_str(), "wb");
+            if (!fp) {
+                std::cerr << "Failed to open file for writing: " << filepath << std::endl;
+                continue;
+            }
+
+            Packet pkt{};
+            while (true) {
+                if (!recv_packet(command_socket, pkt)) {
+                    std::cerr << "Error receiving file data from server.\n";
+                    break;
+                }
+                if (pkt.type == PACKET_TYPE_END) break;
+                if (pkt.type != PACKET_TYPE_DATA) continue;
+                fwrite(pkt.payload, 1, pkt.length, fp);
+            }
+            fclose(fp);
+            std::cout << "File received and saved: " << filepath << std::endl;
+        }
+    }
+}
+
+void watch_server_sync(int socket_fd) {
+    while (true) {
+        Packet pkt{};
+        if (!recv_packet(socket_fd, pkt)) {
+            std::cerr << "[watch_server_sync] Error receiving notify packet from server.\n";
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
+        }
+        if (pkt.type == PACKET_TYPE_NOTIFY) {
+            std::cout << "[watch_server_sync] Received server change notification. Syncing...\n";
+            sync_with_server();
+        }
+    }
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 4) {
         std::cerr << "Usage: " << argv[0]
@@ -380,7 +490,10 @@ int main(int argc, char* argv[]) {
     std::string g_sync_dir = get_sync_dir();
     std::cout << "Local sync directory: " << g_sync_dir << '\n';
 
+    sync_with_server();
+
     std::thread inotify_thread(watch_sync_dir_inotify);
+    std::thread(watch_server_sync, watcher_socket).detach();
 
     init_command_callbacks(send_command, send_file);
 
