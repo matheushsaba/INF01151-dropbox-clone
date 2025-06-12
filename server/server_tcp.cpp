@@ -458,7 +458,7 @@ void handle_new_connection(int listener_socket) {
     }
 }
 
-int main() {
+int start_primary_server_client_connections() {
     std::cout << std::unitbuf;
 
     // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
@@ -489,4 +489,33 @@ int main() {
     handle_new_connection(listener_socket);
 
     return 0;
+}
+
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " -p | -b <primary_ip>\n";
+        return 1;
+    }
+
+    std::string role = argv[1];
+    if (role == "-p") {
+        // Primary server
+
+        // Start listening to client connections
+        return start_primary_server_client_connections();
+
+        // TODO: Start listening for backups (start_replication_service)
+        // TODO: Start sending heartbeats (start_heartbeat_ping)
+    } else if (role == "-b" && argc == 3) {
+        // Backup server
+        std::string primary_ip = argv[2];
+
+        // TODO: Connect to primary (connect_to_primary)
+        // TODO: Listen for replication data (listen_for_replication_data)
+        // TODO: Start heartbeat listener (start_heartbeat_listener)
+    } else {
+        std::cerr << "Invalid arguments.\n";
+        std::cerr << "Usage: " << argv[0] << " -p | -b <primary_ip>\n";
+        return 1;
+    }
 }
