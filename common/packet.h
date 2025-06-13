@@ -14,7 +14,8 @@ enum PacketType {
     PACKET_TYPE_ACK = 3,
     PACKET_TYPE_END = 4,
     PACKET_TYPE_NOTIFY = 5,
-    PACKET_TYPE_DELETE = 6
+    PACKET_TYPE_DELETE = 6,
+    PACKET_TYPE_HB = 7
 };
 
 struct Packet {

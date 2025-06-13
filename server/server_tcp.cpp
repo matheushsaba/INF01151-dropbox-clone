@@ -16,6 +16,7 @@
 #include <map>
 #include "../common/FileInfo.hpp"
 #include <sys/inotify.h>
+#include "heartbeat.h"
 
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
@@ -499,20 +500,30 @@ int main(int argc, char* argv[]) {
 
     std::string role = argv[1];
     if (role == "-p") {
-        // Primary server
+        std::cout << "Starting as PRIMARY server." << std::endl;
+
+        // TODO: Start sending heartbeats (start_heartbeat_ping)
+        start_primary_heartbeat_ping();
 
         // Start listening to client connections
-        return start_primary_server_client_connections();
+        start_primary_server_client_connections();
 
         // TODO: Start listening for backups (start_replication_service)
-        // TODO: Start sending heartbeats (start_heartbeat_ping)
     } else if (role == "-b" && argc == 3) {
-        // Backup server
+        std::cout << "Starting as BACKUP server." << std::endl;
+
         std::string primary_ip = argv[2];
+
+        // TODO: Start heartbeat listener (start_heartbeat_listener)
+        start_backup_heartbeat_listener(primary_ip);
 
         // TODO: Connect to primary (connect_to_primary)
         // TODO: Listen for replication data (listen_for_replication_data)
-        // TODO: Start heartbeat listener (start_heartbeat_listener)
+
+        while (true) {
+            // Busy-waiting to keep backup server alive
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+        }
     } else {
         std::cerr << "Invalid arguments.\n";
         std::cerr << "Usage: " << argv[0] << " -p | -b <primary_ip>\n";
