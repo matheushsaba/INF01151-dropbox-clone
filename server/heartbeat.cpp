@@ -12,8 +12,6 @@
 #include <unistd.h>
 #include <netinet/in.h>
 
-namespace {
-
 constexpr int HB_PORT        = 5001;      // single well-known port
 constexpr int HB_INTERVAL_MS = 250;       // send every 250 ms
 constexpr int HB_TIMEOUT_MS  = 1500;      // 1.5 s → primary presumed dead
@@ -161,7 +159,6 @@ void backup_heartbeat_watch_loop(int sock)
         }
     }
 }
-} 
 
 void start_primary_heartbeat_ping()
 {
