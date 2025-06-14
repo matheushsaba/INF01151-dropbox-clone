@@ -15,7 +15,11 @@ enum PacketType {
     PACKET_TYPE_END = 4,
     PACKET_TYPE_NOTIFY = 5,
     PACKET_TYPE_DELETE = 6,
-    PACKET_TYPE_HB = 7
+    PACKET_TYPE_HB = 7,
+    PACKET_TYPE_ELECT = 8,   // <— election request
+    PACKET_TYPE_COORD = 9,   // <— coordinator announcement
+    PACKET_TYPE_OK = 10,   // reply: “I‘m alive and stronger”
+    PACKET_TYPE_PEERLIST = 11   // (comma-separated "ip1,ip2,…")
 };
 
 struct Packet {

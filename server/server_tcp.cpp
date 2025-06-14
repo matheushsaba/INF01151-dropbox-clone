@@ -18,6 +18,7 @@
 #include <sys/inotify.h>
 #include "heartbeat.h"
 #include <atomic>
+#include "election_bully.h"
 
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
@@ -28,6 +29,8 @@ enum ServerRole { ROLE_PRIMARY, ROLE_BACKUP };
 std::atomic<ServerRole> g_role;           // run-time role, can switch once
 
 static SessionManager session_manager;
+
+std::string my_ip;
 
 std::string get_sync_dir(const std::string& username) {
     namespace fs = std::filesystem;
@@ -540,26 +543,71 @@ void run_as_backup(const std::string& primary_ip) {
     // It should never return
 }
 
-int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " -p | -b <primary_ip>\n";
-        return 1;
+static void usage(const char* prog)
+{
+    std::cerr << "Usage:\n"
+              << "  " << prog << " -p --ip <self_ip>\n"
+              << "  " << prog << " -b <primary_ip> --ip <self_ip>\n";
+}
+
+/* ------------------------------------------------------------------------- */
+int main(int argc, char* argv[])
+{
+    if (argc < 4) { usage(argv[0]); return 1; }
+
+    std::string   role_flag;         // "-p" or "-b"
+    std::string   primary_ip;        // only used in backup mode
+    std::string   self_ip;           // --ip value
+
+    /* --- parse command-line ------------------------------------------------ */
+    for (int i = 1; i < argc; ++i)
+    {
+        std::string arg = argv[i];
+
+        if (arg == "-p" || arg == "-b")
+        {
+            role_flag = arg;
+            if (arg == "-b")
+            {
+                if (++i >= argc) { usage(argv[0]); return 1; }
+                primary_ip = argv[i];
+            }
+        }
+        else if (arg == "--ip")
+        {
+            if (++i >= argc) { usage(argv[0]); return 1; }
+            self_ip = argv[i];
+        }
+        else    // unknown token
+        {
+            usage(argv[0]); return 1;
+        }
     }
 
-    std::string role_flag = argv[1];
-    if (role_flag == "-p") {
+    if (self_ip.empty()) { std::cerr << "--ip is required\n"; return 1; }
+    my_ip = self_ip;                     // make globally visible
+
+    /* --- initialise Bully listener once ----------------------------------- */
+    bully_init(my_ip);
+
+    /* --- choose role ------------------------------------------------------- */
+    if (role_flag == "-p")
+    {
         g_role = ROLE_PRIMARY;
-        std::cout << "Starting as PRIMARY server\n";
-        run_as_primary();
+        std::cout << "Starting as PRIMARY on " << my_ip << '\n';
+        run_as_primary();                        // blocks forever
     }
-    else if (role_flag == "-b" && argc == 3) {
+    else if (role_flag == "-b")
+    {
         g_role = ROLE_BACKUP;
-        std::cout << "Starting as BACKUP server\n";
-        run_as_backup(argv[2]);
+        std::cout << "Starting as BACKUP on " << my_ip
+                  << "  (primary = " << primary_ip << ")\n";
+        run_as_backup(primary_ip);               // blocks until promoted
     }
-    else {
-        std::cerr << "Invalid arguments.\n";
-        std::cerr << "Usage: " << argv[0] << " -p | -b <primary_ip>\n";
+    else
+    {
+        std::cerr << "Missing -p or -b flag\n";
+        usage(argv[0]);
         return 1;
     }
 }

@@ -11,6 +11,8 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <netinet/in.h>
+#include "election_bully.h"
+#include <algorithm>
 
 constexpr int HB_PORT        = 5001;      // single well-known port
 constexpr int HB_INTERVAL_MS = 250;       // send every 250 ms
@@ -18,6 +20,25 @@ constexpr int HB_TIMEOUT_MS  = 1500;      // 1.5 s → primary presumed dead
 
 std::vector<int> hb_clients;
 std::mutex       hb_mtx;
+
+static std::string local_ip;      // set once in main()
+static std::vector<std::string> peer_ips;   // backups we know
+
+void hb_broadcast_peerlist()
+{
+    std::string csv;
+    for (auto& ip : peer_ips) {
+        if (!csv.empty()) csv += ',';
+        csv += ip;
+    }
+
+    Packet pl{}; pl.type = PACKET_TYPE_PEERLIST;
+    pl.length = csv.size();
+    memcpy(pl.payload, csv.data(), pl.length);
+
+    std::lock_guard<std::mutex> lk(hb_mtx);
+    for (int fd : hb_clients) send_packet(fd, pl);
+}
 
 void primary_heartbeat_accept_loop()
 {
@@ -46,7 +67,9 @@ void primary_heartbeat_accept_loop()
     // Starts a loop that accepts backup servers that will listen to the heartbeat
     while (true) 
     {
-        int cli = accept(s, nullptr, nullptr);
+        sockaddr_in addr{};
+        socklen_t   alen = sizeof(addr);
+        int cli = accept(s, reinterpret_cast<sockaddr*>(&addr), &alen);
         if (cli < 0) 
         { 
             perror("accept"); 
@@ -54,7 +77,18 @@ void primary_heartbeat_accept_loop()
         }
         std::lock_guard<std::mutex> lk(hb_mtx);
         hb_clients.push_back(cli);
-        std::cout << "[HB] backup joined (" << cli << ")\n";
+
+        char ipbuf[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &addr.sin_addr, ipbuf, sizeof ipbuf);
+
+        std::string ip(ipbuf);
+        if (std::find(peer_ips.begin(), peer_ips.end(), ip) == peer_ips.end())
+        {
+            peer_ips.push_back(ip);          // keep list unique
+            hb_broadcast_peerlist();         // inform everyone
+        }
+
+        std::cout << "[HB] backup joined " << ip << " (fd=" << cli << ")\n";
     }
 }
 
@@ -136,8 +170,7 @@ void backup_heartbeat_watch_loop(int sock)
                 std::cerr << "[HB] LOST - Starting election\n";
                 // TODO: start a new leader election
                 promote_to_primary();
-                
-                close(sock);
+                bully_start();
                 return; // Exit the function and the thread.
             }
 
@@ -147,6 +180,20 @@ void backup_heartbeat_watch_loop(int sock)
                 // Reset the timeout timer
                 last = clk::now();
             }
+
+            if (pkt.type == PACKET_TYPE_PEERLIST) 
+            {
+                std::string csv(pkt.payload, pkt.length);
+                std::vector<std::string> lst;
+                size_t pos;
+                while ((pos = csv.find(',')) != std::string::npos) {
+                    lst.push_back(csv.substr(0,pos));
+                    csv.erase(0,pos+1);
+                }
+                if (!csv.empty()) lst.push_back(csv);
+                bully_set_peer_list(lst);            // hand to election module
+                continue;                            // not a heartbeat — skip timer update
+            }
         }
 
         // This check handles the case where the primary is still connected but has become unresponsive (not sending pings)
@@ -155,8 +202,7 @@ void backup_heartbeat_watch_loop(int sock)
         {
             std::cerr << "[HB] LOST - Primary unresponsive\n";
             std::cerr << "[HB] LOST - Starting election\n";
-            // TODO: start a new leader election
-            close(sock);
+            bully_start();
             return;
         }
     }
