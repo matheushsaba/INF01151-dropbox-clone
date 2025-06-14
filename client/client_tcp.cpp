@@ -38,7 +38,8 @@ std::atomic<bool> watcher_running{true};
 std::string get_sync_dir();
 
 // Method to create a socket and connect it to the specified port
-void connect_to_port(int& socket_fd, int port) {
+void connect_to_port(int& socket_fd, int port) 
+{
     sockaddr_in serv_addr{};    // Initializes a struct of type sockaddr_in that is going to be filled later. Slide 20 Aula-11
     hostent* server = gethostbyname(hostname.c_str());  // Get server info based on hostname
 
@@ -69,7 +70,8 @@ void connect_to_port(int& socket_fd, int port) {
     }
 }
 
-void send_command(const std::string& cmd) {
+void send_command(const std::string& cmd) 
+{
     /* wrap the text in a Packet so it matches the server’s expectation */
     Packet pkt{};
     pkt.type  = PACKET_TYPE_CMD;
@@ -90,7 +92,8 @@ void send_command(const std::string& cmd) {
     //           << std::string(resp.payload, resp.length) << '\n';
 }
 
-void send_exit_command() {
+void send_exit_command() 
+{
     std::string cmd = "exit|" + username;          // tiny handshake
     Packet pkt{};
     pkt.type  = PACKET_TYPE_CMD;
@@ -102,7 +105,8 @@ void send_exit_command() {
     send_packet(command_socket, pkt);
 }
 
-void send_file(const std::string& file_path) {
+void send_file(const std::string& file_path) 
+{
     std::ifstream file(file_path, std::ios::binary);
     if (!file.is_open()) {
         std::cerr << "Error opening file " << file_path << "\n";
@@ -153,7 +157,8 @@ void send_file(const std::string& file_path) {
 
 // Moves a file to the user's sync directory.
 // Returns the full destination path or empty string on error.
-std::string move_file_to_sync_dir(const std::string& source_path) {
+std::string move_file_to_sync_dir(const std::string& source_path) 
+{
     namespace fs = std::filesystem;
 
     fs::path src_path(source_path);
@@ -176,7 +181,8 @@ std::string move_file_to_sync_dir(const std::string& source_path) {
     return dest_path.string();
 }
 
-std::string download_from_sync_dir(const std::string& filename) {
+std::string download_from_sync_dir(const std::string& filename) 
+{
     namespace fs = std::filesystem;
 
     fs::path sync_path = fs::path(get_sync_dir()) / filename;
@@ -198,7 +204,8 @@ std::string download_from_sync_dir(const std::string& filename) {
     return target_path.string();
 }
 
-bool delete_from_sync_dir(const std::string& filename) {
+bool delete_from_sync_dir(const std::string& filename) 
+{
     namespace fs = std::filesystem;
 
     fs::path target_path = fs::path(get_sync_dir()) / filename;
@@ -246,7 +253,8 @@ std::vector<FileInfo> list_client_sync_dir()
     return files;
 }
 
-std::vector<FileInfo> get_server_sync_dir() {
+std::vector<FileInfo> get_server_sync_dir() 
+{
     std::string cmd = "list_server|" + username;
     send_command(cmd);       
 
@@ -272,7 +280,8 @@ std::vector<FileInfo> get_server_sync_dir() {
     return files;
 }
 
-void cleanup_sockets() {            // friendlier shutdown
+void cleanup_sockets() 
+{
     shutdown(command_socket, SHUT_RDWR);
     close(command_socket);
 
@@ -283,7 +292,8 @@ void cleanup_sockets() {            // friendlier shutdown
     close(file_socket);
 }
 
-void watch_sync_dir_inotify() {
+void watch_sync_dir_inotify() 
+{
     std::string sync_dir = get_sync_dir();
     int inotify_fd = inotify_init1(IN_NONBLOCK);
     if (inotify_fd < 0) {
@@ -355,7 +365,8 @@ void watch_sync_dir_inotify() {
     close(inotify_fd);
 }
 
-void sync_with_server() {
+void sync_with_server() 
+{
     std::string sync_dir = get_sync_dir();
     std::cout << "Syncing with server...\n";
 
@@ -406,7 +417,8 @@ void sync_with_server() {
     }
 }
 
-void watch_server_sync(int socket_fd) {
+void watch_server_sync(int socket_fd) 
+{
     while (true) {
         Packet pkt{};
         if (!recv_packet(socket_fd, pkt)) {
@@ -427,7 +439,8 @@ void watch_server_sync(int socket_fd) {
     }
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[]) 
+{
     if (argc < 4) {
         std::cerr << "Usage: " << argv[0]
                   << " <username> <server_ip_address> <port>\n";

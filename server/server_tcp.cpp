@@ -22,6 +22,8 @@
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
 
+// Global, thread-safe variable to hold the current server role.
+// std::atomic ensures that reads and writes are safe across different threads.
 enum ServerRole { ROLE_PRIMARY, ROLE_BACKUP };
 std::atomic<ServerRole> g_role;           // run-time role, can switch once
 
