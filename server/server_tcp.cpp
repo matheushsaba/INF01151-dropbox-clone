@@ -17,9 +17,13 @@
 #include "../common/FileInfo.hpp"
 #include <sys/inotify.h>
 #include "heartbeat.h"
+#include <atomic>
 
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
+
+enum ServerRole { ROLE_PRIMARY, ROLE_BACKUP };
+std::atomic<ServerRole> g_role;           // run-time role, can switch once
 
 static SessionManager session_manager;
 
@@ -39,8 +43,7 @@ std::string get_sync_dir(const std::string& username) {
 }
 
 // Function to deal with simple command messages
-void handle_command_client(int client_socket, const std::string& username)
-{
+void handle_command_client(int client_socket, const std::string& username) {
     Packet pkt;
 
     while (true) {
@@ -231,8 +234,7 @@ void handle_watcher_client(int client_socket, const std::string& dir) {
     close(fd);
 }
 
-void handle_file_client(int client_socket)
-{
+void handle_file_client(int client_socket) {
     Packet pkt;
 
     while (true) {                               // ❶ laço externo = 1-conexão / N-arquivos
@@ -492,39 +494,68 @@ int start_primary_server_client_connections() {
     return 0;
 }
 
+void run_as_primary() {
+    // Start listening for connections of backup servers and sending 
+    // heartbeats to the ones already connected
+    start_primary_heartbeat_ping();
+
+    // Start listening to client connections
+    start_primary_server_client_connections();
+
+    // It should never return
+}
+
+void promote_to_primary() {
+    ServerRole expected = ROLE_BACKUP;
+    if (!g_role.compare_exchange_strong(expected, ROLE_PRIMARY))
+    {
+        return;                                    // we were already primary
+    }
+
+    std::cout << "\n[PROMOTE] Backup became PRIMARY – switching services\n";
+
+    // TODO: stop / join heartbeat-listener & replication-in threads
+    // TODO: any other cleanup specific to backup mode
+
+    /* start the primary services in *this* thread – they block forever */
+    run_as_primary();
+    std::exit(0);          // if those functions ever return, just terminate
+}
+
+void run_as_backup(const std::string& primary_ip) {
+    // Connects to the primary server via its ip and starts
+    // listening for its heartbeats
+    start_backup_heartbeat_listener(primary_ip);
+
+    // TODO: Listen for replication data (listen_for_replication_data)
+
+    // Stay alive until elected as new primary in a leader election
+    while (g_role.load() == ROLE_BACKUP)
+    {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+    }
+
+    // It should never return
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " -p | -b <primary_ip>\n";
         return 1;
     }
 
-    std::string role = argv[1];
-    if (role == "-p") {
-        std::cout << "Starting as PRIMARY server." << std::endl;
-
-        // TODO: Start sending heartbeats (start_heartbeat_ping)
-        start_primary_heartbeat_ping();
-
-        // Start listening to client connections
-        start_primary_server_client_connections();
-
-        // TODO: Start listening for backups (start_replication_service)
-    } else if (role == "-b" && argc == 3) {
-        std::cout << "Starting as BACKUP server." << std::endl;
-
-        std::string primary_ip = argv[2];
-
-        // TODO: Start heartbeat listener (start_heartbeat_listener)
-        start_backup_heartbeat_listener(primary_ip);
-
-        // TODO: Connect to primary (connect_to_primary)
-        // TODO: Listen for replication data (listen_for_replication_data)
-
-        while (true) {
-            // Busy-waiting to keep backup server alive
-            std::this_thread::sleep_for(std::chrono::seconds(5));
-        }
-    } else {
+    std::string role_flag = argv[1];
+    if (role_flag == "-p") {
+        g_role = ROLE_PRIMARY;
+        std::cout << "Starting as PRIMARY server\n";
+        run_as_primary();
+    }
+    else if (role_flag == "-b" && argc == 3) {
+        g_role = ROLE_BACKUP;
+        std::cout << "Starting as BACKUP server\n";
+        run_as_backup(argv[2]);
+    }
+    else {
         std::cerr << "Invalid arguments.\n";
         std::cerr << "Usage: " << argv[0] << " -p | -b <primary_ip>\n";
         return 1;
