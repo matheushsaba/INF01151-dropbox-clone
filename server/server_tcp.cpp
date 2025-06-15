@@ -16,11 +16,21 @@
 #include <map>
 #include "../common/FileInfo.hpp"
 #include <sys/inotify.h>
+#include "heartbeat.h"
+#include <atomic>
+#include "election_bully.h"
 
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
 
+// Global, thread-safe variable to hold the current server role.
+// std::atomic ensures that reads and writes are safe across different threads.
+enum ServerRole { ROLE_PRIMARY, ROLE_BACKUP };
+std::atomic<ServerRole> g_role;           // run-time role, can switch once
+
 static SessionManager session_manager;
+
+std::string my_ip;
 
 std::string get_sync_dir(const std::string& username) {
     namespace fs = std::filesystem;
@@ -38,8 +48,7 @@ std::string get_sync_dir(const std::string& username) {
 }
 
 // Function to deal with simple command messages
-void handle_command_client(int client_socket, const std::string& username)
-{
+void handle_command_client(int client_socket, const std::string& username) {
     Packet pkt;
 
     while (true) {
@@ -230,8 +239,7 @@ void handle_watcher_client(int client_socket, const std::string& dir) {
     close(fd);
 }
 
-void handle_file_client(int client_socket)
-{
+void handle_file_client(int client_socket) {
     Packet pkt;
 
     while (true) {                               // ❶ laço externo = 1-conexão / N-arquivos
@@ -491,31 +499,128 @@ int start_primary_server_client_connections() {
     return 0;
 }
 
-int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " -p | -b <primary_ip>\n";
-        return 1;
+void run_as_primary() {
+    // Start listening for connections of backup servers and sending 
+    // heartbeats to the ones already connected
+    start_primary_heartbeat_ping();
+
+    // Start listening to client connections
+    start_primary_server_client_connections();
+
+    // It should never return
+}
+
+void promote_to_primary() {
+    ServerRole expected = ROLE_BACKUP;
+    if (!g_role.compare_exchange_strong(expected, ROLE_PRIMARY))
+    {
+        return;                                    // we were already primary
     }
 
-    std::string role = argv[1];
-    if (role == "-p") {
-        // Primary server
+    std::cout << "\n[PROMOTE] Backup became PRIMARY – switching services\n";
 
-        // Start listening to client connections
-        return start_primary_server_client_connections();
+    // TODO: stop / join heartbeat-listener & replication-in threads
+    // TODO: any other cleanup specific to backup mode
 
-        // TODO: Start listening for backups (start_replication_service)
-        // TODO: Start sending heartbeats (start_heartbeat_ping)
-    } else if (role == "-b" && argc == 3) {
-        // Backup server
-        std::string primary_ip = argv[2];
+    /* start the primary services in *this* thread – they block forever */
+    run_as_primary();
+    std::exit(0);          // if those functions ever return, just terminate
+}
 
-        // TODO: Connect to primary (connect_to_primary)
-        // TODO: Listen for replication data (listen_for_replication_data)
-        // TODO: Start heartbeat listener (start_heartbeat_listener)
-    } else {
-        std::cerr << "Invalid arguments.\n";
-        std::cerr << "Usage: " << argv[0] << " -p | -b <primary_ip>\n";
+void run_as_backup(const std::string& primary_ip) {
+    // Connects to the primary server via its ip and starts
+    // listening for its heartbeats
+    start_backup_heartbeat_listener(primary_ip);
+
+    // TODO: Listen for replication data (listen_for_replication_data)
+
+    // Stay alive until elected as new primary in a leader election
+    while (g_role.load() == ROLE_BACKUP)
+    {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+    }
+
+    // It should never return
+}
+
+static void usage(const char* prog)
+{
+    std::cerr << "Usage:\n"
+              << "  " << prog << " -p --ip <self_ip>\n"
+              << "  " << prog << " -b <primary_ip> --ip <self_ip>\n";
+}
+
+/* ------------------------------------------------------------------------- */
+int main(int argc, char* argv[])
+{
+    if (argc < 4) { usage(argv[0]); return 1; }
+
+    std::string   role_flag;         // "-p" or "-b"
+    std::string   primary_ip;        // only used in backup mode
+    std::string   self_ip;           // --ip value
+
+    /* --- parse command-line ------------------------------------------------ */
+    for (int i = 1; i < argc; ++i)
+    {
+        std::string arg = argv[i];
+
+        if (arg == "-p" || arg == "-b")
+        {
+            role_flag = arg;
+            if (arg == "-b")
+            {
+                if (++i >= argc) 
+                { 
+                    usage(argv[0]); 
+                    return 1; 
+                }
+                primary_ip = argv[i];
+            }
+        }
+        else if (arg == "--ip")
+        {
+            if (++i >= argc)
+            { 
+                usage(argv[0]); 
+                return 1; 
+            }
+            self_ip = argv[i];
+        }
+        else    // unknown token
+        {
+            usage(argv[0]); 
+            return 1;
+        }
+    }
+
+    if (self_ip.empty()) 
+    { 
+        std::cerr << "--ip is required\n"; 
+        return 1; 
+    }
+    my_ip = self_ip;                     // make globally visible
+
+    /* --- initialise Bully listener once ----------------------------------- */
+    bully_init(my_ip);
+
+    /* --- choose role ------------------------------------------------------- */
+    if (role_flag == "-p")
+    {
+        g_role = ROLE_PRIMARY;
+        std::cout << "Starting as PRIMARY on " << my_ip << '\n';
+        run_as_primary();                        // blocks forever
+    }
+    else if (role_flag == "-b")
+    {
+        g_role = ROLE_BACKUP;
+        std::cout << "Starting as BACKUP on " << my_ip
+                  << "  (primary = " << primary_ip << ")\n";
+        run_as_backup(primary_ip);               // blocks until promoted
+    }
+    else
+    {
+        std::cerr << "Missing -p or -b flag\n";
+        usage(argv[0]);
         return 1;
     }
 }
