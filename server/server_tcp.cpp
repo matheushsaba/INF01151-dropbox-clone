@@ -569,22 +569,35 @@ int main(int argc, char* argv[])
             role_flag = arg;
             if (arg == "-b")
             {
-                if (++i >= argc) { usage(argv[0]); return 1; }
+                if (++i >= argc) 
+                { 
+                    usage(argv[0]); 
+                    return 1; 
+                }
                 primary_ip = argv[i];
             }
         }
         else if (arg == "--ip")
         {
-            if (++i >= argc) { usage(argv[0]); return 1; }
+            if (++i >= argc)
+            { 
+                usage(argv[0]); 
+                return 1; 
+            }
             self_ip = argv[i];
         }
         else    // unknown token
         {
-            usage(argv[0]); return 1;
+            usage(argv[0]); 
+            return 1;
         }
     }
 
-    if (self_ip.empty()) { std::cerr << "--ip is required\n"; return 1; }
+    if (self_ip.empty()) 
+    { 
+        std::cerr << "--ip is required\n"; 
+        return 1; 
+    }
     my_ip = self_ip;                     // make globally visible
 
     /* --- initialise Bully listener once ----------------------------------- */

@@ -117,7 +117,9 @@ void bully_init(const std::string& my_ip)
     g_my_ip  = my_ip;
 
     g_sock = socket(AF_INET, SOCK_DGRAM, 0);
-    sockaddr_in me{}; me.sin_family=AF_INET; me.sin_port=htons(E_PORT);
+    sockaddr_in me{}; 
+    me.sin_family=AF_INET; 
+    me.sin_port=htons(E_PORT);
     me.sin_addr.s_addr = INADDR_ANY;
     bind(g_sock, reinterpret_cast<sockaddr*>(&me), sizeof(me));
 
