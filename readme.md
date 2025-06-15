@@ -1,22 +1,39 @@
-# 🗂️ Sistema de Sincronização de Arquivos (Servidor + Cliente)
+# 🗂️ Sistema de Sincronização de Arquivos  
+> **Servidor primário + réplicas em “bully” + cliente** – C++17
 
-Este projeto implementa, em **C++17**, um sistema de sincronização de arquivos que oferece **upload**, **download**, **listagem** e **remoção**, usando **TCP** entre um cliente multithread e um servidor multithread.
+O projeto agora suporta **replicação passiva**: um servidor **primário** envia
+batimentos (*heartbeat*) para **backups**; caso o primário caia, os backups
+executam o **algoritmo Bully** para eleger um novo líder.
 
 ---
 
-## 📁 Estrutura do Repositório
+## 📁 Estrutura de Diretórios
 
-| Caminho                        | Descrição                                                   |
-| ------------------------------ | ----------------------------------------------------------- |
-| `client/`                      | Código‑fonte do **cliente**                                 |
-| `server/`                      | Código‑fonte do **servidor**                                |
-| `common/`                      | Módulos compartilhados (ex.: `packet.cpp`, `packet.h`)      |
-| `build/obj/**`                 | Objetos gerados (**fora** da árvore de código)              |
-| `bin/`                         | Executáveis criados pelo `make` (`myClient`, `server_exec`) |
-| `client_storage/`              | Diretório local de sincronização do cliente                 |
-| `server_storage/`              | Diretório onde o servidor guarda os arquivos dos usuários   |
-| `Makefile`                     | Script de build                                             |
-| `INF01151-Trabalho_pt1-v4.pdf` | Descrição formal do trabalho                                |
+| Caminho                               | Descrição                                                   |
+| ------------------------------------- | ----------------------------------------------------------- |
+| `client/`                             | Código-fonte do **cliente multithread**                     |
+| `server/`                             | Partes do **servidor**                                      |
+| &emsp;`server/server_tcp.cpp`         | Front-end (aceita clientes/heartbeats)                      |
+| &emsp;`server/heartbeat.*`            | Envio/escuta de heartbeats (TCP :5001)                      |
+| &emsp;`server/election_bully.*`       | Implementação do Bully via UDP :5002                        |
+| &emsp;`server/session_manager.*`      | Controle de sessões simultâneas                             |
+| `common/`                             | Códigos compartilhados (`packet.*`, helpers, structs)       |
+| `bin/`                                | Executáveis (`server_exec`, `myClient`)                     |
+| `build/obj/`                          | Objetos gerados pelo `make`                                 |
+| `server_storage/`                     | Árvore de arquivos dos usuários                             |
+| `client_storage/`                     | Pasta-espelho do cliente                                    |
+| `Makefile`                            | Build simples via `g++`                                     |
+| `INF01151-Trabalho_pt1-v4.pdf`        | Enunciado original da disciplina                            |
+
+> Os diretórios de _storage_ são (re)criáveis; `make clean` os limpa.
+
+---
+
+## 🛠️ Compilar
+
+```bash
+make          # gera bin/server_exec e bin/myClient
+
 
 > ℹ️ Os diretórios `client_storage/` e `server_storage/` são criados/limpos automaticamente pelos alvos `make` e `make clean`.
 
@@ -54,19 +71,21 @@ O alvo padrão:
 
 ## ▶️ Execução
 
-### 1. Iniciar o servidor
+### 1. Iniciar um servidor primário
 
 ```bash
-./bin/server_exec
+./bin/server_exec  -p  --ip <meu_ip>
+# Exemplo local:
+./bin/server_exec -p --ip 127.0.0.1
 ```
 
-Por padrão o servidor escuta as portas:
+### 1. Iniciar um servidor backup
 
-| Porta | Propósito                                   |
-| ----: | ------------------------------------------- |
-|  4000 | Comandos (list, delete, etc.)               |
-|  4001 | Watcher (filesystem events – futura)        |
-|  4002 | Transferência de arquivos (upload/download) |
+```bash
+./bin/server_exec  -b <ip_do_primario>  --ip <meu_ip>
+# Exemplo local:
+./bin/server_exec -b 127.0.0.1 --ip 127.0.0.2
+```
 
 ### 2. Rodar o cliente
 
