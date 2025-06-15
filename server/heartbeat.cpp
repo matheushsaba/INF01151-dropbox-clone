@@ -65,30 +65,38 @@ void primary_heartbeat_accept_loop()
     std::cout << "[HB] listening on :" << HB_PORT << '\n';
 
     // Starts a loop that accepts backup servers that will listen to the heartbeat
-    while (true) 
-    {
+    while (true) {
         sockaddr_in addr{};
         socklen_t   alen = sizeof(addr);
         int cli = accept(s, reinterpret_cast<sockaddr*>(&addr), &alen);
-        if (cli < 0) 
-        { 
+        if (cli < 0) { 
             perror("accept"); 
             continue; 
         }
-        std::lock_guard<std::mutex> lk(hb_mtx);
-        hb_clients.push_back(cli);
-
+        
         char ipbuf[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &addr.sin_addr, ipbuf, sizeof ipbuf);
-
         std::string ip(ipbuf);
-        if (std::find(peer_ips.begin(), peer_ips.end(), ip) == peer_ips.end())
+
+        bool should_broadcast = false;
+        
         {
-            peer_ips.push_back(ip);          // keep list unique
-            hb_broadcast_peerlist();         // inform everyone
-        }
+            std::lock_guard<std::mutex> lk(hb_mtx);
+            hb_clients.push_back(cli);
+
+            // Check if the peer is new to the list
+            if (std::find(peer_ips.begin(), peer_ips.end(), ip) == peer_ips.end()) {
+                peer_ips.push_back(ip);
+                should_broadcast = true; // Set a flag to broadcast after releasing the lock
+            }
+        } // The lock on hb_mtx is released here as lk goes out of scope
 
         std::cout << "[HB] backup joined " << ip << " (fd=" << cli << ")\n";
+
+        // Call the broadcast function outside the lock to prevent deadlock
+        if (should_broadcast) {
+            hb_broadcast_peerlist();
+        }
     }
 }
 
