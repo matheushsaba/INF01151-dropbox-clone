@@ -37,36 +37,121 @@ std::atomic<bool> watcher_running{true};
 
 std::string get_sync_dir();
 
-// Method to create a socket and connect it to the specified port
-void connect_to_port(int& socket_fd, int port) 
-{
-    sockaddr_in serv_addr{};    // Initializes a struct of type sockaddr_in that is going to be filled later. Slide 20 Aula-11
-    hostent* server = gethostbyname(hostname.c_str());  // Get server info based on hostname
+// Esta função tentará se conectar a cada IP da lista até encontrar o primário.
+// Retorna o socket da sessão se for bem-sucedido, ou -1 em caso de falha.
+int find_and_connect_to_primary(const std::vector<std::string>& server_ips, int port, const std::string& local_username) {
+    for (const auto& ip : server_ips) {
+        std::cout << "INFO: Tentando conectar ao servidor " << ip << ":" << port << "..." << std::endl;
 
-    if (!server) { // Server returns null if it fails to be found
-        std::cerr << "ERROR: No such host\n";
+        // 1. Lógica de criação de socket e resolução de host (adaptado da sua main)
+        hostent* server = gethostbyname(ip.c_str());
+        if (!server) {
+            std::cerr << "AVISO: Host não encontrado: " << ip << ". Tentando o próximo." << std::endl;
+            continue;
+        }
+
+        int temp_socket = socket(AF_INET, SOCK_STREAM, 0);
+        if (temp_socket < 0) {
+            perror("ERRO: Falha ao abrir o socket de sessão");
+            continue;
+        }
+
+        sockaddr_in serv_addr{};
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(port);
+        serv_addr.sin_addr = *reinterpret_cast<in_addr*>(server->h_addr);
+        memset(&(serv_addr.sin_zero), 0, 8);
+
+        // 2. Tenta conectar (com um timeout implícito do SO)
+        if (connect(temp_socket, reinterpret_cast<sockaddr*>(&serv_addr), sizeof(serv_addr)) < 0) {
+            // Este erro é esperado se o servidor for um backup ou estiver offline.
+            // perror("AVISO: Falha ao conectar"); // Comentado para não poluir a saída
+            close(temp_socket);
+            continue;
+        }
+
+        // 3. Conexão TCP bem-sucedida! Agora, faz o handshake para confirmar se é o primário.
+        std::cout << "INFO: Conexão TCP estabelecida com " << ip << ". Realizando handshake..." << std::endl;
+
+        Packet hello{};
+        hello.type = PACKET_TYPE_CMD;
+        hello.length = std::min((int)local_username.size(), MAX_PAYLOAD_SIZE);
+        std::memcpy(hello.payload, local_username.c_str(), hello.length);
+        if (!send_packet(temp_socket, hello)) {
+            std::cerr << "ERRO: Falha ao enviar handshake para " << ip << std::endl;
+            close(temp_socket);
+            continue;
+        }
+
+        // 4. Espera pela resposta com timeout para não ficar preso em um backup.
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(temp_socket, &read_fds);
+        timeval timeout;
+        timeout.tv_sec = 2;  // 2 segundos de timeout
+        timeout.tv_usec = 0;
+
+        int activity = select(temp_socket + 1, &read_fds, NULL, NULL, &timeout);
+        if (activity <= 0) {
+            std::cout << "INFO: Servidor " << ip << " não respondeu ao handshake a tempo (provavelmente é um backup)." << std::endl;
+            close(temp_socket);
+            continue;
+        }
+
+        // 5. Recebe e processa a resposta.
+        Packet reply{};
+        if (!recv_packet(temp_socket, reply)) {
+            std::cerr << "AVISO: Falha ao receber resposta de " << ip << " após o handshake." << std::endl;
+            close(temp_socket);
+            continue;
+        }
+        
+        std::string response_msg(reply.payload, reply.length);
+        if (response_msg.rfind("DENY", 0) == 0) {
+            std::cerr << "AVISO: Conexão recusada por " << ip << ": " << response_msg << std::endl;
+            close(temp_socket);
+            continue;
+        }
+
+        // 6. SUCESSO! Encontramos o primário.
+        std::cout << "SUCESSO: Conectado ao servidor primário em " << ip << std::endl;
+        hostname = ip; // Atualiza a variável global 'hostname' que outras funções podem usar.
+        return temp_socket;
+    }
+
+    // Se o loop terminar, nenhum servidor primário foi encontrado.
+    std::cerr << "ERRO FATAL: Não foi possível encontrar um servidor primário ativo na lista fornecida." << std::endl;
+    return -1;
+}
+
+// A função não deve mais dar exit(1), para permitir tratamento de erro.
+void connect_to_port(int& socket_fd, int port) {
+    // A variável 'hostname' agora é setada pela função find_and_connect_to_primary
+    hostent* server = gethostbyname(hostname.c_str());
+    if (!server) {
+        std::cerr << "ERRO: Nenhum host encontrado para " << hostname << "\n";
+        // Em vez de exit(1), poderíamos lançar uma exceção ou retornar um código de erro.
+        // Por enquanto, manter o exit aqui é aceitável, pois é uma falha grave
+        // se o primário desaparecer DEPOIS de ter se conectado.
         exit(1);
     }
 
-    // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
     socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (socket_fd < 0) { // If is less than 0, it failed creating the socket
-        perror("ERROR opening socket");
-        exit(1);
+    if (socket_fd < 0) {
+        perror("ERRO ao abrir socket");
+        exit(1); // Falha crítica
     }
 
-    // Set server address and port. Slide 20 Aula-11
+    sockaddr_in serv_addr{};
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(port); // Ensures correct byte order on the communication. Slide 26 Aula-11
-    serv_addr.sin_addr = *reinterpret_cast<in_addr*>(server->h_addr); // Copies the ip addres from gethostbyname(). server->h_addr is a pointer
+    serv_addr.sin_port = htons(port);
+    serv_addr.sin_addr = *reinterpret_cast<in_addr*>(server->h_addr);
     memset(&(serv_addr.sin_zero), 0, 8);
 
-    // Connect the socket to the server. Slide 23 Aula-11
-    int connect_result = connect(socket_fd, reinterpret_cast<sockaddr*>(&serv_addr), sizeof(serv_addr));
-    if (connect_result < 0) {
-        perror("ERROR connecting");
+    if (connect(socket_fd, reinterpret_cast<sockaddr*>(&serv_addr), sizeof(serv_addr)) < 0) {
+        perror("ERRO ao conectar nas portas dinâmicas");
         close(socket_fd);
-        exit(1);
+        exit(1); // Falha crítica
     }
 }
 
@@ -439,58 +524,51 @@ void watch_server_sync(int socket_fd)
     }
 }
 
-int main(int argc, char* argv[]) 
-{
+int main(int argc, char* argv[]) {
+    // 1. Processa os argumentos de linha de comando
     if (argc < 4) {
         std::cerr << "Usage: " << argv[0]
-                  << " <username> <server_ip_address> <port>\n";
+                  << " <username> <port> <server_ip_1> [server_ip_2] ...\n";
         return 1;
     }
 
-    username = argv[1];                  // e.g. "alice"
-    hostname = argv[2];                  // e.g. "127.0.0.1"
-    int port = std::stoi(argv[3]);       // e.g. 4000
+    username = argv[1];
+    int port = std::stoi(argv[2]);
 
-    int session_socket;
-    connect_to_port(session_socket, port);
+    std::vector<std::string> server_ips;
+    for (int i = 3; i < argc; ++i) {
+        server_ips.push_back(argv[i]);
+    }
 
-    // Send handshake packet: "username"
-    Packet hello{};
-    hello.type = PACKET_TYPE_CMD;
-    hello.length = std::min((int)username.size(), MAX_PAYLOAD_SIZE);
-    std::memcpy(hello.payload, username.c_str(), hello.length);
-    send_packet(session_socket, hello);
-
-    // Wait for response
-    Packet reply{};
-    if (!recv_packet(session_socket, reply)) {
-        std::cerr << "❌ Failed to receive response from server.\n";
-        close(session_socket);
+    if (server_ips.empty()) {
+        std::cerr << "ERRO: Pelo menos um IP de servidor deve ser fornecido.\n";
         return 1;
     }
 
-    std::string response_msg(reply.payload, reply.length);
-    if (response_msg.rfind("DENY", 0) == 0) {
-        std::cerr << "❌ Connection refused: " << response_msg << '\n';
-        close(session_socket);
-        return 1;
+    // 2. Chama a nova função para encontrar o primário
+    // A função connect_to_port não é mais necessária para a conexão inicial.
+    int session_socket = find_and_connect_to_primary(server_ips, port, username);
+
+    if (session_socket < 0) {
+        return 1; // Encerra se nenhum primário foi encontrado.
     }
 
-    // Assume OK and expect 3-port info next
+    // 3. A partir daqui, o código é o mesmo que você já tinha após a conexão.
+    // Recebe as portas dinâmicas do primário que foi encontrado.
     Packet ports_pkt;
     if (!recv_packet(session_socket, ports_pkt)) {
-        std::cerr << "❌ Failed to receive port info from server.\n";
+        std::cerr << "❌ Falha ao receber informações de porta do servidor.\n";
         close(session_socket);
         return 1;
     }
 
-    close(session_socket);  // We no longer use the initial socket
+    close(session_socket);  // Fecha o socket de sessão inicial, como já fazia.
 
     std::string ports_str(ports_pkt.payload, ports_pkt.length);
     size_t p1 = ports_str.find('|');
     size_t p2 = ports_str.find('|', p1 + 1);
     if (p1 == std::string::npos || p2 == std::string::npos) {
-        std::cerr << "❌ Malformed port message: " << ports_str << '\n';
+        std::cerr << "❌ Mensagem de porta malformada: " << ports_str << '\n';
         return 1;
     }
 
@@ -498,16 +576,15 @@ int main(int argc, char* argv[])
     int watcher_port = std::stoi(ports_str.substr(p1 + 1, p2 - p1 - 1));
     dynamic_file_port = std::stoi(ports_str.substr(p2 + 1));
 
+    // A função connect_to_port ainda é útil aqui para as portas dinâmicas.
     connect_to_port(command_socket, command_port);
-    std::cout << "✅ Connected to command socket on port " << command_port << '\n';
+    std::cout << "✅ Conectado ao socket de comando na porta " << command_port << '\n';
 
     connect_to_port(watcher_socket, watcher_port);
-    std::cout << "✅ Connected to watcher socket on port " << watcher_port << '\n';
-
-    // The file port only receives a connection reuest when a file is sent
+    std::cout << "✅ Conectado ao socket de observação na porta " << watcher_port << '\n';
 
     std::string g_sync_dir = get_sync_dir();
-    std::cout << "Local sync directory: " << g_sync_dir << '\n';
+    std::cout << "Diretório de sincronização local: " << g_sync_dir << '\n';
 
     sync_with_server();
 
@@ -522,7 +599,7 @@ int main(int argc, char* argv[])
         std::getline(std::cin, input);
         if (input == "exit") {
             send_exit_command();
-            std::cout << "Closing connection... \n";            
+            std::cout << "Encerrando conexão... \n";            
             break;
         } else {
             process_command(input);
