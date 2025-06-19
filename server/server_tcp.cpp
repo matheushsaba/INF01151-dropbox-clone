@@ -538,15 +538,13 @@ void promote_to_primary() {
 void run_as_backup(const std::string& primary_ip) {
     start_backup_heartbeat_listener(primary_ip);
 
-    // ...
-
     // Este loop mantém o processo vivo enquanto somos um backup.
     while (g_role.load() == ROLE_BACKUP)
     {
         std::this_thread::sleep_for(std::chrono::seconds(3));
     }
 
-    // ---> ADICIONE ESTE NOVO LOOP AQUI <---
+
     // Se chegamos aqui, fomos promovidos. O trabalho principal agora está
     // sendo feito pelas threads do primário, iniciadas pela eleição.
     // A única tarefa da thread main agora é manter o processo vivo, dormindo para sempre.
