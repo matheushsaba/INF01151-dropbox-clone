@@ -422,9 +422,10 @@ void watch_server_sync(int socket_fd)
     while (true) {
         Packet pkt{};
         if (!recv_packet(socket_fd, pkt)) {
-            std::cerr << "[watch_server_sync] Error receiving notify packet from server.\n";
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            continue;
+           // A conexão foi perdida. Em vez de imprimir um erro,
+            // podemos opcionalmente registrar e encerrar a thread.
+            std::cout << "[Watcher] Conexão com o servidor perdida. Encerrando thread do watcher." << std::endl;
+            return; // <-- A MUDANÇA MAIS IMPORTANTE: SAI DA FUNÇÃO E TERMINA A THREAD
         }
         if (pkt.type == PACKET_TYPE_NOTIFY) {
             std::cout << "[watch_server_sync] Received server change notification. Syncing...\n";
@@ -443,13 +444,13 @@ int main(int argc, char* argv[])
 {
     if (argc < 4) {
         std::cerr << "Usage: " << argv[0]
-                  << " <username> <server_ip_address> <port>\n";
+                  << " <username> <frontend_ip_address> <frontend_port>\n";
         return 1;
     }
 
     username = argv[1];                  // e.g. "alice"
-    hostname = argv[2];                  // e.g. "127.0.0.1"
-    int port = std::stoi(argv[3]);       // e.g. 4000
+    hostname = argv[2];                  // e.g. "127.0.0.1" IP do front-end
+    int port = std::stoi(argv[3]);       // e.g. 4000 porta do front-end
 
     int session_socket;
     connect_to_port(session_socket, port);

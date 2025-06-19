@@ -47,7 +47,16 @@ bool recv_packet(int sockfd, Packet& pkt) {
     int header_size = sizeof(pkt.type) + sizeof(pkt.seqn) + sizeof(pkt.total_size) + sizeof(pkt.length);
     int n = recv(sockfd, header, header_size, MSG_WAITALL);
     if (n != header_size) {
-        perror("recv");
+        if (n == 0) {
+            // Conexão fechada pelo outro lado. Isso é esperado quando um servidor cai.
+            // Não imprimimos nada para manter o terminal do cliente limpo.
+        } else if (n > 0) {
+            // Recebeu menos dados que o esperado, um erro de protocolo.
+            std::cerr << "recv: Incomplete packet header received.\n";
+        } else {
+            // n < 0, um erro real de socket. Aqui o perror é útil.
+            perror("recv_packet header");
+        }
         return false;
     }
 
@@ -60,13 +69,21 @@ bool recv_packet(int sockfd, Packet& pkt) {
 
     char buffer[1500];
     std::memcpy(buffer, header, header_size);
-    if (length == 0) {
-        n = 0;
-    } else {
+    if (length > 0) {
         n = recv(sockfd, buffer + header_size, length, MSG_WAITALL);
-    }
-    if (n != length) {
-        return false;
+
+        // A verificação de erro agora está aqui dentro, aplicando a mesma lógica do cabeçalho
+        if (n != length) {
+            if (n >= 0) {
+                // Caso n=0 (conexão fechada) ou 0<n<length (pacote incompleto).
+                // Ambos indicam que a conexão foi perdida durante a transferência do payload.
+                // Mantemos silencioso para o usuário.
+            } else {
+                // n<0 indica um erro real de sistema.
+                perror("recv_packet (payload)");
+            }
+            return false; // Falha na recepção do pacote
+        }
     }
 
     int dsz = deserialize_packet(buffer, header_size + length, pkt);

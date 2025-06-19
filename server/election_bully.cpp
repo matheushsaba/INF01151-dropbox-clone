@@ -81,6 +81,43 @@ void listener()
     }
 }
 
+void notify_frontend_of_victory(const std::string& winner_ip) {
+    // Endereço e porta do Front-End para notificações
+    const char* fe_ip = "127.0.0.1";
+    const int fe_notification_port = 9090;
+
+    std::cout << "[ELECT] Tentando notificar o Front-End em " << fe_ip << ":" << fe_notification_port << "...\n";
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("[ELECT] ERRO: Falha ao criar socket para notificar FE");
+        return;
+    }
+
+    sockaddr_in fe_addr{};
+    fe_addr.sin_family = AF_INET;
+    fe_addr.sin_port = htons(fe_notification_port);
+    if (inet_pton(AF_INET, fe_ip, &fe_addr.sin_addr) <= 0) {
+        perror("[ELECT] ERRO: Endereço do FE inválido");
+        close(sock);
+        return;
+    }
+
+    // 3. Conectar ao FE
+    if (connect(sock, (struct sockaddr*)&fe_addr, sizeof(fe_addr)) == 0) {
+        // 4. Enviar a mensagem
+        // A porta 4000 é a porta de serviço que o servidor primário usa para clientes
+        std::string msg = "NEW_LEADER " + winner_ip + " 4000"; 
+        send(sock, msg.c_str(), msg.length(), 0);
+        close(sock);
+        std::cout << "[ELECT] SUCESSO: Notificação de novo líder enviada para o Front-End.\n";
+    } else {
+        perror("[ELECT] ERRO: Falha ao conectar ao Front-End");
+        close(sock);
+    }
+}
+
+
 // ---------- internal election procedure ------------------------------------
 void do_election()
 {
@@ -101,6 +138,7 @@ void do_election()
         for (auto& ip : g_peers)
             if (ip != g_my_ip)
                 tx(ip, PACKET_TYPE_COORD, g_my_pid);
+        notify_frontend_of_victory(g_my_ip);
 
         promote_to_primary();               // switch roles
     }

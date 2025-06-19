@@ -176,8 +176,6 @@ void backup_heartbeat_watch_loop(int sock)
             {
                 std::cerr << "[HB] LOST - Primary TCP connection closed. Presumed down.\n";
                 std::cerr << "[HB] LOST - Starting election\n";
-                // TODO: start a new leader election
-                promote_to_primary();
                 bully_start();
                 return; // Exit the function and the thread.
             }

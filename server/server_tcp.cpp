@@ -476,6 +476,12 @@ int start_primary_server_client_connections() {
         return -1;
     }
 
+    int option = 1;
+    if (setsockopt(listener_socket, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option)) < 0) {
+        perror("setsockopt(SO_REUSEADDR) failed");
+    }
+
+
     // Set server address and port. Slide 20 Aula-11
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -527,20 +533,27 @@ void promote_to_primary() {
     std::exit(0);          // if those functions ever return, just terminate
 }
 
+// server/src/server_tcp.cpp
+
 void run_as_backup(const std::string& primary_ip) {
-    // Connects to the primary server via its ip and starts
-    // listening for its heartbeats
     start_backup_heartbeat_listener(primary_ip);
 
-    // TODO: Listen for replication data (listen_for_replication_data)
+    // ...
 
-    // Stay alive until elected as new primary in a leader election
+    // Este loop mantém o processo vivo enquanto somos um backup.
     while (g_role.load() == ROLE_BACKUP)
     {
         std::this_thread::sleep_for(std::chrono::seconds(3));
     }
 
-    // It should never return
+    // ---> ADICIONE ESTE NOVO LOOP AQUI <---
+    // Se chegamos aqui, fomos promovidos. O trabalho principal agora está
+    // sendo feito pelas threads do primário, iniciadas pela eleição.
+    // A única tarefa da thread main agora é manter o processo vivo, dormindo para sempre.
+    std::cout << "[INFO] Main thread entering wait state as primary.\n";
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(3600)); // Dorme por 1 hora
+    }
 }
 
 static void usage(const char* prog)
