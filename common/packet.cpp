@@ -46,15 +46,16 @@ bool recv_packet(int sockfd, Packet& pkt) {
     char header[10];
     int header_size = sizeof(pkt.type) + sizeof(pkt.seqn) + sizeof(pkt.total_size) + sizeof(pkt.length);
     int n = recv(sockfd, header, header_size, MSG_WAITALL);
-    if (n != header_size) {
+    if (n != header_size) 
+    {
         if (n == 0) {
-            // Conexão fechada pelo outro lado. Isso é esperado quando um servidor cai.
-            // Não imprimimos nada para manter o terminal do cliente limpo.
+            // Connection closed by the other side. This is expected when a server goes down.
+            // We don't print anything to keep the client's terminal clean.
         } else if (n > 0) {
-            // Recebeu menos dados que o esperado, um erro de protocolo.
+            // Received less data than expected, a protocol error.
             std::cerr << "recv: Incomplete packet header received.\n";
         } else {
-            // n < 0, um erro real de socket. Aqui o perror é útil.
+            // n < 0, a real socket error.
             perror("recv_packet header");
         }
         return false;
@@ -63,26 +64,27 @@ bool recv_packet(int sockfd, Packet& pkt) {
     uint16_t length;
     std::memcpy(&length, header + header_size - sizeof(length), sizeof(length));
 
-    if (length > MAX_PAYLOAD_SIZE) {
+    if (length > MAX_PAYLOAD_SIZE) 
+    {
         return false;
     }
 
     char buffer[1500];
     std::memcpy(buffer, header, header_size);
-    if (length > 0) {
+    if (length > 0) 
+    {
         n = recv(sockfd, buffer + header_size, length, MSG_WAITALL);
-
-        // A verificação de erro agora está aqui dentro, aplicando a mesma lógica do cabeçalho
-        if (n != length) {
+        if (n != length) 
+        {
             if (n >= 0) {
-                // Caso n=0 (conexão fechada) ou 0<n<length (pacote incompleto).
-                // Ambos indicam que a conexão foi perdida durante a transferência do payload.
-                // Mantemos silencioso para o usuário.
+                // Case n=0 (connection closed) or 0<n<length (incomplete packet).
+                // Both indicate that the connection was lost during the payload transfer.
+                // We don't print anything to keep the client's terminal clean.
             } else {
-                // n<0 indica um erro real de sistema.
+                // n < 0, a real socket error.
                 perror("recv_packet (payload)");
             }
-            return false; // Falha na recepção do pacote
+            return false; // Packet reception failure
         }
     }
 
