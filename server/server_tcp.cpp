@@ -476,11 +476,15 @@ int start_primary_server_client_connections() {
         return -1;
     }
 
+    // Set the SO_REUSEADDR socket option. This allows the server's listener_socket
+    // to bind to its designated address and port (e.g., port 4000) immediately
+    // after a previous instance of the server using that same port has been closed.
+    // Without this, the port might remain in a TIME_WAIT state, preventing a quick
+    // restart and causing "Address already in use" errors
     int option = 1;
     if (setsockopt(listener_socket, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option)) < 0) {
         perror("setsockopt(SO_REUSEADDR) failed");
     }
-
 
     // Set server address and port. Slide 20 Aula-11
     sockaddr_in addr{};
@@ -533,24 +537,27 @@ void promote_to_primary() {
     std::exit(0);          // if those functions ever return, just terminate
 }
 
-// server/src/server_tcp.cpp
-
 void run_as_backup(const std::string& primary_ip) {
+    // Connects to the primary server via its ip and starts
+    // listening for its heartbeats
     start_backup_heartbeat_listener(primary_ip);
+    
+    // TODO: Listen for replication data
 
-    // Este loop mantém o processo vivo enquanto somos um backup.
+    // This loop keeps the process alive while we are a backup.
     while (g_role.load() == ROLE_BACKUP)
     {
         std::this_thread::sleep_for(std::chrono::seconds(3));
     }
 
+    // TODO: Stop listening for replication data
 
-    // Se chegamos aqui, fomos promovidos. O trabalho principal agora está
-    // sendo feito pelas threads do primário, iniciadas pela eleição.
-    // A única tarefa da thread main agora é manter o processo vivo, dormindo para sempre.
+    // If we reach here, we have been promoted. The main work is now being
+    // done by the primary's threads, started by the election.
+    // The only task of the main thread now is to keep the process alive, sleeping forever.
     std::cout << "[INFO] Main thread entering wait state as primary.\n";
     while (true) {
-        std::this_thread::sleep_for(std::chrono::seconds(3600)); // Dorme por 1 hora
+        std::this_thread::sleep_for(std::chrono::seconds(3600)); // Sleeps for 1 hour
     }
 }
 
