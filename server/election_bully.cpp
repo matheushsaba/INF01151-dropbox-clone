@@ -82,15 +82,15 @@ void listener()
 }
 
 void notify_frontend_of_victory(const std::string& winner_ip) {
-    // Endereço e porta do Front-End para notificações
+    // Address and port of the Front-End for notifications
     const char* fe_ip = "127.0.0.1";
     const int fe_notification_port = 9090;
 
-    std::cout << "[ELECT] Tentando notificar o Front-End em " << fe_ip << ":" << fe_notification_port << "...\n";
+    std::cout << "[ELECT] Attempting to notify the Front-End at " << fe_ip << ":" << fe_notification_port << "...\n";
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-        perror("[ELECT] ERRO: Falha ao criar socket para notificar FE");
+        perror("[ELECT] ERROR: Failed to create socket to notify FE");
         return;
     }
 
@@ -98,21 +98,21 @@ void notify_frontend_of_victory(const std::string& winner_ip) {
     fe_addr.sin_family = AF_INET;
     fe_addr.sin_port = htons(fe_notification_port);
     if (inet_pton(AF_INET, fe_ip, &fe_addr.sin_addr) <= 0) {
-        perror("[ELECT] ERRO: Endereço do FE inválido");
+        perror("[ELECT] ERROR: Invalid FE address");
         close(sock);
         return;
     }
 
-    // 3. Conectar ao FE
+    // Connect to FE
     if (connect(sock, (struct sockaddr*)&fe_addr, sizeof(fe_addr)) == 0) {
-        // 4. Enviar a mensagem
-        // A porta 4000 é a porta de serviço que o servidor primário usa para clientes
+        // Send the message
+        // Port 4000 is the service port that the primary server uses for clients
         std::string msg = "NEW_LEADER " + winner_ip + " 4000"; 
         send(sock, msg.c_str(), msg.length(), 0);
         close(sock);
-        std::cout << "[ELECT] SUCESSO: Notificação de novo líder enviada para o Front-End.\n";
+        std::cout << "[ELECT] SUCCESS: New leader notification sent to the Front-End.\n";
     } else {
-        perror("[ELECT] ERRO: Falha ao conectar ao Front-End");
+        perror("[ELECT] ERROR: Failed to connect to the Front-End");
         close(sock);
     }
 }
