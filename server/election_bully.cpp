@@ -62,6 +62,15 @@ void listener()
             }
         }
         else if (pkt.type == PACKET_TYPE_COORD) {
+             std::string new_leader_ip(ipbuf);
+            std::cout << "[ELECT] New coordinator is " << new_leader_ip << " (PID " << sender_pid << ")\n";
+            
+            // ---> A LÓGICA DE RECONEXÃO VAI AQUI <---
+
+            // A thread do heartbeat antigo já deve ter terminado com erro.
+            // Agora, iniciamos uma nova, conectando ao novo líder.
+            std::cout << "[HB] Reconnecting heartbeat listener to new primary: " << new_leader_ip << std::endl;
+            start_backup_heartbeat_listener(new_leader_ip);
             std::cout << "[ELECT] New coordinator: PID " << sender_pid
                       << " (" << ipbuf << ")\n";
             // Election finished — remain backup if not me
