@@ -13,15 +13,18 @@ constexpr int REPLICATION_PORT = 5003;
 struct PeerReplicationInfo { //maybe we could put this in a separate file for heartbeat, election bully and replication to use?
     std::string ip;
     int port;
+    int push_socket_fd = -1; // -1 indicates no active connection to the primary
 };
 
+// global:
 // connections between primary and backups will be stored here
-extern std::vector<std::string> g_replication_peers;  // list of backup servers
+// std::vector<PeerReplicationInfo> g_replication_peers; // list of backup servers
 
 // protect access to the vector, as it might be accessible by multiple threads
 // when connecting/promoting, etc.
 extern std::mutex g_replication_peers_mtx; 
 
+// functions:
 // start listener thread on the replication port and accepts connections
 // from backup servers that will pull data from the primary server
 // each accepted connection will be handled in a new detached thread

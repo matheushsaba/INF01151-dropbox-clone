@@ -60,6 +60,9 @@ void handle_command_client(int client_socket, const std::string& username) {
             close(client_socket);
             return;
         }
+
+        // TODO: put an if statement here for the server to print command received only when the packet type is PACKET_TYPE_CMD
+        
         std::string command(pkt.payload, pkt.length);
         std::cout << "Command received: " << command << std::endl;
         Packet response;
