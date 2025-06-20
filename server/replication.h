@@ -16,7 +16,7 @@ struct PeerReplicationInfo { //maybe we could put this in a separate file for he
 };
 
 // connections between primary and backups will be stored here
-extern std::vector<std::string> g_replication_peers;  // runtime list of backup servers
+extern std::vector<std::string> g_replication_peers;  // list of backup servers
 
 // protect access to the vector, as it might be accessible by multiple threads
 // when connecting/promoting, etc.
@@ -32,10 +32,21 @@ void start_primary_replication_listener();
 // file changes to the backups 
 void connect_to_all_backup_replication_ports_for_push();
 
+// called whenever a file in sync_dir changes due to a client operation
+// pushes changes and waits for acks from the backups
 void replicate_file_change(const std::string& username, const std::string& filename, PacketType change_type);
 
 // Backups:
 
+// starts a listener thread to accept incoming connections from the 
+// primary server to this backup - accepts one connection and
+// should restart if the primry disconnects, so a new primary can connect 
+void start_backup_replication_listener();
+
+// called when a backup server starts or becomes the new primary
+// to ensure its local sync_dir is consistent with the primary 
+// it requests all data
+void request_full_sync_from_primary(const std::string& primary_ip);
 
 
 
