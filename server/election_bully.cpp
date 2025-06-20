@@ -111,10 +111,11 @@ void do_election()
 
 /* ---------- public API ---------------------------------------------------- */
 
+// This function is called only when the first server is initialized via command terminal
 void bully_init(const std::string& my_ip)
 {
-    g_my_pid = static_cast<uint32_t>(::getpid());
-    g_my_ip  = my_ip;
+    g_my_pid = static_cast<uint32_t>(::getpid()); // Gets the process pid
+    g_my_ip = my_ip; // Gets the server ip
 
     g_sock = socket(AF_INET, SOCK_DGRAM, 0);
     sockaddr_in me{}; 
