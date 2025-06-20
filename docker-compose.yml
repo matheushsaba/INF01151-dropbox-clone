@@ -1,0 +1,58 @@
+version: '3.8'
+
+# Define the virtual network for our servers
+networks:
+  dropbox-net:
+    driver: bridge
+    # IP Address Management (IPAM) config to define a subnet
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+# Define the services (our servers)
+services:
+  # The Primary Server
+  primary:
+    build: . # Build the image from the Dockerfile in the current directory
+    container_name: primary-server
+    # The command now uses a hardcoded IP address.
+    command: ["./bin/server_exec", "-p", "--ip", "172.28.0.10"]
+    environment:
+      - SERVICE_NAME=primary
+    networks:
+      dropbox-net:
+        # Assign a static IP to this container
+        ipv4_address: 172.28.0.10
+    # Map port 4000 on the host to port 4000 on this container.
+    # This allows a client running on your Windows machine to connect to the primary.
+    ports:
+      - "4000:4000"
+
+  # The First Backup Server
+  backup1:
+    build: .
+    container_name: backup-server-1
+    # The command now uses hardcoded IPs for both the primary and itself.
+    command: ["./bin/server_exec", "-b", "172.28.0.10", "--ip", "172.28.0.11"]
+    environment:
+      - SERVICE_NAME=backup1
+    networks:
+      dropbox-net:
+        ipv4_address: 172.28.0.11
+    # This ensures the primary server is started before this backup attempts to connect.
+    depends_on:
+      - primary
+
+  # The Second Backup Server
+  backup2:
+    build: .
+    container_name: backup-server-2
+    # The command now uses hardcoded IPs.
+    command: ["./bin/server_exec", "-b", "172.28.0.10", "--ip", "172.28.0.12"]
+    environment:
+      - SERVICE_NAME=backup2
+    networks:
+      dropbox-net:
+        ipv4_address: 172.28.0.12
+    depends_on:
+      - primary
