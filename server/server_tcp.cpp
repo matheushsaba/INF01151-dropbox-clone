@@ -53,7 +53,7 @@ void handle_command_client(int client_socket, const std::string& username) {
 
     while (true) {
         if (!recv_packet(client_socket, pkt)) {
-            std::cerr << "Erro ao receber pacote de comando.\n";
+            std::cerr << "Error receiving commant packet.\n";
             close(client_socket);
             return;
         }
@@ -503,6 +503,9 @@ void run_as_primary() {
     // Start listening for connections of backup servers and sending 
     // heartbeats to the ones already connected
     start_primary_heartbeat_ping();
+
+    // Start the primary's dedicated replication listener for backups
+    // start_primary_replication_listener(); 
 
     // Start listening to client connections
     start_primary_server_client_connections();
