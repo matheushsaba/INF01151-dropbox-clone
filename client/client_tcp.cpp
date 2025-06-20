@@ -27,13 +27,12 @@ extern std::string hostname;
 constexpr int NAME_MAX = 255;
 
 
-// Sockets para os 3 canais de comunicação com o FE. Inicializados como inválidos.
+// Sockets for the 3 communication channels with the FE. Initialized as invalid.
 int g_command_socket = -1;
 int g_watcher_socket = -1;
-int g_file_socket = -1; // Este será conectado sob demanda
+int g_file_socket = -1; 
 
-
-// fake ports to front-end reconnection
+// Fake ports for front-end reconnection
 int g_fake_command_port = -1;
 int g_fake_watcher_port = -1;
 int g_fake_file_port = -1;
@@ -57,7 +56,7 @@ void connect_to_port(int& socket_fd, int port)
 
     // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
     socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (socket_fd < 0) { // If is less than 0, it failed creating the socket
+    if (socket_fd < 0) {
         perror("ERROR opening socket");
         exit(1);
     }
@@ -89,13 +88,13 @@ void send_command(const std::string& cmd)
         return;
     }
     // if it failed, probably the connection was lost. Try to reconnect
-    std::cout << "\n[CLIENT] Commands connection lost. Trying to reconnect to Front-End..." << std::endl;
+    std::cout << "\n[CLIENT] Command connection lost. Trying to reconnect to Front-End..." << std::endl;
     close(g_command_socket);
     connect_to_port(g_command_socket, g_fake_command_port);
-    
+
     // second attempt to connect to new socket
     if (send_packet(g_command_socket, pkt)) {
-        std::cout << "[CLIENT] Successful reconnection. Command sent." << std::endl;
+        std::cout << "[CLIENT] Reconnected successfully. Command sent." << std::endl;
     } else {
         perror("[CLIENT] ERROR: Failed to send command after reconnecting");
     }
@@ -109,9 +108,9 @@ void send_file(const std::string& file_path)
         return;
     }
 
-    // A lógica de reconexão para o socket de arquivo é crucial aqui.
+    // The reconnection logic for the file socket is crucial here.
     if (g_file_socket < 0) {
-        std::cout << "[CLIENTE] Conectando ao canal de arquivos..." << std::endl;
+        std::cout << "[CLIENT] Connecting to file channel..." << std::endl;
         connect_to_port(g_file_socket, g_fake_file_port);
     }
     
@@ -124,13 +123,13 @@ void send_file(const std::string& file_path)
     std::memcpy(header_pkt.payload, header.c_str(), header_pkt.length);
 
     if (!send_packet(g_file_socket, header_pkt)) {
-        std::cerr << "Error sending packet header on upload. Trying to reconnect..." << std::endl;
+        std::cerr << "Error sending packet header during upload. Trying to reconnect..." << std::endl;
         close(g_file_socket);
         connect_to_port(g_file_socket, g_fake_file_port);
         if (!send_packet(g_file_socket, header_pkt)) {
-            std::cerr << "Error sending packet header on upload even after trying to reconnect." << std::endl;
+            std::cerr << "Error sending packet header during upload even after reconnecting." << std::endl;
             close(g_file_socket);
-            g_file_socket = -1; // turns the socket invalid
+            g_file_socket = -1;
             return;
         }
     }
@@ -142,9 +141,9 @@ void send_file(const std::string& file_path)
         data_pkt.length = file.gcount();
         std::memcpy(data_pkt.payload, buffer, data_pkt.length);
         if (!send_packet(g_file_socket, data_pkt)) {
-            std::cerr << "Error sending package data." << std::endl;
-           close(g_file_socket);
-            g_file_socket = -1;  // turns the socket invalid
+            std::cerr << "Error sending packet data." << std::endl;
+            close(g_file_socket);
+            g_file_socket = -1;
             break; 
         }
     }
@@ -266,7 +265,7 @@ std::vector<FileInfo> get_server_sync_dir()
     std::cout << "Receiving file list from server..." << std::endl;
     while (true) {
         if (!recv_packet(g_command_socket, pkt)) {
-             std::cout << "Error receiving response from server.\n";
+            std::cout << "Error receiving response from server.\n";
             return {};
         }
         if (pkt.type == PACKET_TYPE_END) break; // End of transmission
@@ -275,15 +274,15 @@ std::vector<FileInfo> get_server_sync_dir()
     }
 
     std::vector<FileInfo> files(reinterpret_cast<const FileInfo*>(buffer.data()),
-                              reinterpret_cast<const FileInfo*>(buffer.data() + buffer.size()));
+                                reinterpret_cast<const FileInfo*>(buffer.data() + buffer.size()));
     return files;
 }
 
 void cleanup_sockets() 
 {
-   close(g_command_socket);
+    close(g_command_socket);
     close(g_watcher_socket);
-    if(g_file_socket > 0) close(g_file_socket);
+    if (g_file_socket > 0) close(g_file_socket);
 }
 
 void watch_sync_dir_inotify() 
@@ -318,14 +317,13 @@ void watch_sync_dir_inotify()
             if (event->len > 0) {
                 std::string filepath = sync_dir + "/" + event->name;
                 if (event->mask & IN_CLOSE_WRITE) {
-                    std::cout << "[INOTIFY] File modified detected: " << event->name << ". Sending..." << std::endl;
+                    std::cout << "[INOTIFY] File modification detected: " << event->name << ". Sending..." << std::endl;
                     if (std::filesystem::is_regular_file(filepath)) {
                         // Just call send_file. The connection responsibility is hers.
                         send_file(filepath);
                     }
                 } else if (event->mask & IN_DELETE) {
                     std::cout << "[INOTIFY] File deleted: " << event->name << std::endl;
-                    // Here you would call a future robust 'send_delete_command'
                     std::string cmd = "delete|" + std::string(event->name);
                     send_command(cmd); 
                 }
@@ -393,26 +391,19 @@ void watch_server_sync(int socket_fd)
 {
     while (watcher_running) {
         Packet pkt{};
-         if (!recv_packet(socket_fd, pkt)) {
-
+        if (!recv_packet(socket_fd, pkt)) {
             std::cout << "[Watcher] Connection with server lost. Ending watcher thread." << std::endl;
             // The thread will exit here, but the reconnection logic is handled in the main loop if necessary.
             // This is a change from the previous logic where we would print an error and continue.
             // This allows the main thread to handle reconnections or other operations without blocking.
             return;
         }
-        if (!recv_packet(socket_fd, pkt)) {
-           // A conexão foi perdida. Em vez de imprimir um erro,
-            // podemos opcionalmente registrar e encerrar a thread.
-            std::cout << "[Watcher] Conexão com o servidor perdida. Encerrando thread do watcher." << std::endl;
-            return; // <-- A MUDANÇA MAIS IMPORTANTE: SAI DA FUNÇÃO E TERMINA A THREAD
-        }
+
         if (pkt.type == PACKET_TYPE_NOTIFY) {
-            std::cout << "[watch_server_sync] Received server change notification. Syncing...\n";
+            std::cout << "[watch_server_sync] Server change notification received. Syncing...\n";
             sync_with_server();
-        
         } else if (pkt.type == PACKET_TYPE_DELETE) {
-            std::cout << "[watch_server_sync] Received server change notification. Syncing...\n";
+            std::cout << "[watch_server_sync] Deletion notification received. Deleting from sync_dir...\n";
             std::string filename = pkt.payload;
             std::string filename2 = filename.substr(19);
             delete_from_sync_dir(filename2);
@@ -429,10 +420,10 @@ int main(int argc, char* argv[])
     }
 
     username = argv[1];
-    hostname = argv[2];              // IP do FRONT-END
-    int port = std::stoi(argv[3]);   // Porta do FRONT-END (ex: 8080)
+    hostname = argv[2];             // IP of the FRONT-END
+    int port = std::stoi(argv[3]); // Port of the FRONT-END (e.g., 8080)
 
-    // 1. Conexão de Handshake
+    // 1. Handshake connection
     int handshake_socket;
     connect_to_port(handshake_socket, port);
 
@@ -442,7 +433,7 @@ int main(int argc, char* argv[])
     std::memcpy(hello.payload, username.c_str(), hello.length);
     send_packet(handshake_socket, hello);
 
-    // 2. Receber respostas e portas falsas
+    // 2. Receive response and fake ports
     Packet reply{};
     if (!recv_packet(handshake_socket, reply) || std::string(reply.payload, reply.length) != "OK") {
         std::cerr << "❌ Failed to receive response from server: " << std::string(reply.payload, reply.length) << std::endl;
@@ -451,11 +442,12 @@ int main(int argc, char* argv[])
     }
     std::string response_msg(reply.payload, reply.length);
     if (response_msg.rfind("DENY", 0) == 0) {
-        std::cerr << "❌ Connection refused: " << response_msg << '\n';
+        std::cerr << "❌ Connection denied: " << response_msg << '\n';
         close(handshake_socket);
         return 1;
     }
-     // Assume OK and expect 3-port info next
+
+    // Assume OK and expect 3-port info next
     if (!recv_packet(handshake_socket, reply)) {
         std::cerr << "❌ Failed to receive port info from front-end." << std::endl;
         close(handshake_socket);
@@ -463,11 +455,11 @@ int main(int argc, char* argv[])
     }
     close(handshake_socket); // We no longer use the initial socket
 
-    // 3. Armazenar portas falsas e estabelecer conexões de serviço
+    // 3. Store fake ports and establish service connections
     std::string ports_str(reply.payload, reply.length);
     size_t p1 = ports_str.find('|');
     size_t p2 = ports_str.find('|', p1 + 1);
-     if (p1 == std::string::npos || p2 == std::string::npos) {
+    if (p1 == std::string::npos || p2 == std::string::npos) {
         std::cerr << "❌ Malformed port message: " << ports_str << '\n';
         return 1;
     }
@@ -480,15 +472,15 @@ int main(int argc, char* argv[])
     std::cout << "✅ Connected to command socket on fake port " << g_fake_command_port << std::endl;
 
     connect_to_port(g_watcher_socket, g_fake_watcher_port);
-    std::cout << "✅ Connected to watcher socket on fake port " <<  g_fake_watcher_port << "by front-end" << std::endl;
-    
-     // The file port only receives a connection reuest when a file is sent
+    std::cout << "✅ Connected to watcher socket on fake port " << g_fake_watcher_port << " by front-end" << std::endl;
+
+    // File port will be opened only when sending a file
     std::cout << "Local sync directory: " << get_sync_dir() << std::endl;
 
-    // 4. Iniciar threads e loop principal
-    // sync_with_server(); // Descomente se adaptar para a nova lógica de socket
+    // 4. Start threads and main loop
+    // sync_with_server(); // Uncomment if adapting to new socket logic
     std::thread(watch_server_sync, g_watcher_socket).detach();
-    // std::thread(watch_sync_dir_inotify).detach(); // Descomente se adaptar send_file
+    // std::thread(watch_sync_dir_inotify).detach(); // Uncomment if adapting send_file
 
     init_command_callbacks(send_command, send_file);
 
@@ -502,9 +494,9 @@ int main(int argc, char* argv[])
         process_command(input);
     }
 
-    // 5. Limpeza
+    // 5. Cleanup
     watcher_running = false;
-   cleanup_sockets();
+    cleanup_sockets();
     
     std::cout << "Closing connection..." << std::endl;
     return 0;

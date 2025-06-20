@@ -62,18 +62,18 @@ void listener()
             }
         }
         else if (pkt.type == PACKET_TYPE_COORD) {
-             std::string new_leader_ip(ipbuf);
+            std::string new_leader_ip(ipbuf);
             std::cout << "[ELECT] New coordinator is " << new_leader_ip << " (PID " << sender_pid << ")\n";
-            
-            // ---> A LÓGICA DE RECONEXÃO VAI AQUI <---
 
-            // A thread do heartbeat antigo já deve ter terminado com erro.
-            // Agora, iniciamos uma nova, conectando ao novo líder.
+            // ---> RECONNECTION LOGIC GOES HERE <---
+
+            // The old heartbeat thread must have already exited with an error.
+            // Now we start a new one, connecting to the new leader.
             std::cout << "[HB] Reconnecting heartbeat listener to new primary: " << new_leader_ip << std::endl;
             start_backup_heartbeat_listener(new_leader_ip);
             std::cout << "[ELECT] New coordinator: PID " << sender_pid
                       << " (" << ipbuf << ")\n";
-            // Election finished — remain backup if not me
+            // Election is finished — remain backup if not me
         }
         else if (pkt.type == PACKET_TYPE_PEERLIST) {
             std::string csv(pkt.payload, pkt.length);
@@ -112,7 +112,7 @@ void notify_frontend_of_victory(const std::string& winner_ip) {
         return;
     }
 
-    // Connect to FE
+    // Connect to the Front-End
     if (connect(sock, (struct sockaddr*)&fe_addr, sizeof(fe_addr)) == 0) {
         // Send the message
         // Port 4000 is the service port that the primary server uses for clients

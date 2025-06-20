@@ -11,37 +11,33 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include <cstdio> // Para sscanf
-
-// Assumindo que seu packet.h e common.hpp estão acessíveis
+#include <cstdio> 
 #include "../common/packet.h"
 #include "../common/common.hpp"
-
-// --- ESTRUTURAS DE DADOS E GLOBAIS ---
 
 struct Address {
     std::string ip;
     int port;
 };
 
-using PortMap = std::map<int, int>; // Mapeia <porta_falsa_no_FE, porta_real_no_RM>
+using PortMap = std::map<int, int>; // Maps <fake_port_in_FE, real_port_in_RM>
 
 struct ClientSession {
     std::mutex mtx;
     std::string username;
     std::string current_rm_ip;
     PortMap port_map;
-    
+
     ClientSession(std::string uname, std::string rm_ip) : username(std::move(uname)), current_rm_ip(std::move(rm_ip)) {}
 };
 
-// --- Variáveis Globais ---
+// --- Global Variables ---
 Address g_current_primary_address;
 std::mutex g_primary_address_mutex;
 std::map<std::string, std::shared_ptr<ClientSession>> g_active_sessions;
 std::mutex g_sessions_mutex;
 
-// --- Protótipos de Funções ---
+// --- Function Prototypes ---
 void session_handshake_thread(int client_handshake_sock);
 void proxy_connection_thread(std::shared_ptr<ClientSession> session, int fake_listener_sock);
 void listen_for_leader_updates(int notification_port);
@@ -50,7 +46,6 @@ int create_listening_socket(int port);
 int get_socket_port(int sockfd);
 bool recover_session_handshake(std::shared_ptr<ClientSession> session);
 
-// --- Função Principal ---
 int main(int argc, char* argv[]) {
     if (argc < 3) {
         std::cerr << "Usage: " << argv[0] << " <initial_primary_ip> <initial_primary_port>\n";
@@ -59,7 +54,7 @@ int main(int argc, char* argv[]) {
     }
 
     g_current_primary_address = {argv[1], std::stoi(argv[2])};
-    std::cout << "[FE] Primário inicial configurado para " << g_current_primary_address.ip << ":" << g_current_primary_address.port << std::endl;
+    std::cout << "[FE] Initial primary configured to " << g_current_primary_address.ip << ":" << g_current_primary_address.port << std::endl;
 
     int notification_port = 9090;
     std::thread(listen_for_leader_updates, notification_port).detach();
@@ -68,8 +63,8 @@ int main(int argc, char* argv[]) {
     int client_listener_sock = create_listening_socket(client_listen_port);
     if (client_listener_sock < 0) exit(1);
 
-    std::cout << "[FE] Ouvindo por clientes na porta " << client_listen_port << std::endl;
-    
+    std::cout << "[FE] Listening for clients on port " << client_listen_port << std::endl;
+
     while (true) {
         int client_sock = accept(client_listener_sock, nullptr, nullptr);
         if (client_sock >= 0) {
@@ -79,7 +74,6 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
-// --- Implementação das Threads e Funções ---
 
 void session_handshake_thread(int client_handshake_sock) {
     Packet pkt;
@@ -91,7 +85,7 @@ void session_handshake_thread(int client_handshake_sock) {
         std::lock_guard<std::mutex> lock(g_primary_address_mutex);
         primary_addr = g_current_primary_address;
     }
-    
+
     int rm_handshake_sock = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in rm_addr_info{};
     rm_addr_info.sin_family = AF_INET;
@@ -100,7 +94,7 @@ void session_handshake_thread(int client_handshake_sock) {
 
     if (connect(rm_handshake_sock, (struct sockaddr*)&rm_addr_info, sizeof(rm_addr_info)) < 0) {
         Packet err_pkt;
-        const char* err_msg = "DENY|FE não conseguiu conectar ao RM primário";
+        const char* err_msg = "DENY|FE could not connect to the primary RM";
         err_pkt.length = strlen(err_msg);
         memcpy(err_pkt.payload, err_msg, err_pkt.length);
         send_packet(client_handshake_sock, err_pkt);
@@ -111,8 +105,8 @@ void session_handshake_thread(int client_handshake_sock) {
 
     send_packet(rm_handshake_sock, pkt);
     recv_packet(rm_handshake_sock, pkt);
-    send_packet(client_handshake_sock, pkt); // Repassa o OK/DENY do RM
-    
+    send_packet(client_handshake_sock, pkt); // Relay OK/DENY from RM
+
     if (std::string(pkt.payload, pkt.length).rfind("DENY", 0) == 0) {
         close(client_handshake_sock);
         close(rm_handshake_sock);
@@ -122,10 +116,10 @@ void session_handshake_thread(int client_handshake_sock) {
     recv_packet(rm_handshake_sock, pkt);
     std::string real_ports_str(pkt.payload, pkt.length);
     close(rm_handshake_sock);
-    
+
     int real_cmd_port, real_watch_port, real_file_port;
     sscanf(real_ports_str.c_str(), "%d|%d|%d", &real_cmd_port, &real_watch_port, &real_file_port);
-    
+
     auto session = std::make_shared<ClientSession>(username, primary_addr.ip);
 
     std::vector<int> fake_ports;
@@ -133,21 +127,21 @@ void session_handshake_thread(int client_handshake_sock) {
 
     for (int real_p : real_ports) {
         int fake_listener_sock = create_listening_socket(0);
-        if (fake_listener_sock < 0) { /* Tratar erro */ continue; }
-        
+        if (fake_listener_sock < 0) { continue; }
+
         int fake_port = get_socket_port(fake_listener_sock);
         session->port_map[fake_port] = real_p;
         fake_ports.push_back(fake_port);
         std::thread(proxy_connection_thread, session, fake_listener_sock).detach();
     }
-    
+
     std::string fake_ports_str = std::to_string(fake_ports[0]) + "|" + std::to_string(fake_ports[1]) + "|" + std::to_string(fake_ports[2]);
     pkt.length = fake_ports_str.length();
     memcpy(pkt.payload, fake_ports_str.c_str(), pkt.length);
     send_packet(client_handshake_sock, pkt);
-    
+
     close(client_handshake_sock);
-    
+
     std::lock_guard<std::mutex> lock(g_sessions_mutex);
     g_active_sessions[username] = session;
 }
@@ -161,8 +155,8 @@ void proxy_connection_thread(std::shared_ptr<ClientSession> session, int fake_li
         std::thread([=]() {
             int real_port;
             std::string rm_ip;
-            
-            { // Escopo para o lock
+
+            { // Lock scope
                 std::lock_guard<std::mutex> lock(session->mtx);
                 real_port = session->port_map.at(fake_port);
                 rm_ip = session->current_rm_ip;
@@ -175,45 +169,44 @@ void proxy_connection_thread(std::shared_ptr<ClientSession> session, int fake_li
             inet_pton(AF_INET, rm_ip.c_str(), &rm_addr.sin_addr);
 
             if (connect(rm_sock, (struct sockaddr*)&rm_addr, sizeof(rm_addr)) == 0) {
-                 // CAMINHO FELIZ: A conexão funcionou, apenas encaminha os dados.
-                 std::thread c_to_r(forward_data, client_sock, rm_sock);
-                 std::thread r_to_c(forward_data, rm_sock, client_sock);
-                 c_to_r.join();
-                 r_to_c.join();
+                // HAPPY PATH: Connection succeeded, just forward data.
+                std::thread c_to_r(forward_data, client_sock, rm_sock);
+                std::thread r_to_c(forward_data, rm_sock, client_sock);
+                c_to_r.join();
+                r_to_c.join();
             } else {
-                 // CAMINHO DA FALHA: A conexão foi recusada. Tenta recuperar a sessão.
-                 std::cerr << "[FE] Falha ao conectar ao RM em " << rm_ip << ":" << real_port << ". Iniciando recuperação..." << std::endl;
-                 close(rm_sock);
+                // FAILURE PATH: Connection was refused. Attempting to recover session.
+                std::cerr << "[FE] Failed to connect to RM at " << rm_ip << ":" << real_port << ". Starting recovery..." << std::endl;
+                close(rm_sock);
 
-                 if (recover_session_handshake(session)) {
-                     std::cout << "[FE] Recuperação da sessão bem-sucedida! Tentando reconectar..." << std::endl;
-                     
-                     // Pega os dados ATUALIZADOS da sessão
-                     {
+                if (recover_session_handshake(session)) {
+                    std::cout << "[FE] Session recovery successful! Trying to reconnect..." << std::endl;
+
+                    { // Updated session info
                         std::lock_guard<std::mutex> lock(session->mtx);
                         real_port = session->port_map.at(fake_port);
                         rm_ip = session->current_rm_ip;
-                     }
+                    }
 
-                     rm_sock = socket(AF_INET, SOCK_STREAM, 0);
-                     rm_addr.sin_port = htons(real_port);
-                     inet_pton(AF_INET, rm_ip.c_str(), &rm_addr.sin_addr);
+                    rm_sock = socket(AF_INET, SOCK_STREAM, 0);
+                    rm_addr.sin_port = htons(real_port);
+                    inet_pton(AF_INET, rm_ip.c_str(), &rm_addr.sin_addr);
 
-                     if (connect(rm_sock, (struct sockaddr*)&rm_addr, sizeof(rm_addr)) == 0) {
-                        std::cout << "[FE] Reconexão com o novo primário estabelecida!" << std::endl;
+                    if (connect(rm_sock, (struct sockaddr*)&rm_addr, sizeof(rm_addr)) == 0) {
+                        std::cout << "[FE] Reconnection to the new primary established!" << std::endl;
                         std::thread c_to_r(forward_data, client_sock, rm_sock);
                         std::thread r_to_c(forward_data, rm_sock, client_sock);
                         c_to_r.join();
                         r_to_c.join();
-                     } else {
-                        perror("[FE] Falha ao reconectar mesmo após recuperação");
+                    } else {
+                        perror("[FE] Failed to reconnect even after recovery");
                         close(client_sock);
                         close(rm_sock);
-                     }
-                 } else {
-                    std::cerr << "[FE] A rotina de recuperação da sessão falhou. Encerrando conexão com cliente." << std::endl;
+                    }
+                } else {
+                    std::cerr << "[FE] Session recovery routine failed. Closing client connection." << std::endl;
                     close(client_sock);
-                 }
+                }
             }
         }).detach();
     }
@@ -223,7 +216,7 @@ void listen_for_leader_updates(int notification_port) {
     int listener_sock = create_listening_socket(notification_port);
     if (listener_sock < 0) exit(1);
 
-    std::cout << "[FE] Ouvindo por atualizações de líder na porta " << notification_port << std::endl;
+    std::cout << "[FE] Listening for leader updates on port " << notification_port << std::endl;
 
     while (true) {
         int rm_sock = accept(listener_sock, nullptr, nullptr);
@@ -232,32 +225,29 @@ void listen_for_leader_updates(int notification_port) {
         char buffer[256] = {0};
         read(rm_sock, buffer, sizeof(buffer) - 1);
         close(rm_sock);
-        
+
         char new_ip_str[16];
         int new_port;
         if (sscanf(buffer, "NEW_LEADER %15s %d", new_ip_str, &new_port) == 2) {
             std::lock_guard<std::mutex> lock(g_primary_address_mutex);
             g_current_primary_address.ip = new_ip_str;
             g_current_primary_address.port = new_port;
-            std::cout << "[FE] ATUALIZAÇÃO DE LÍDER: Novo primário definido para " << new_ip_str << ":" << new_port << std::endl;
-            
-           std::cout << "[FE] Atualizando o estado das sessões de clientes ativos..." << std::endl;
-            
-            // Bloqueia o mapa de sessões para poder iterar sobre ele com segurança
+            std::cout << "[FE] LEADER UPDATE: New primary set to " << new_ip_str << ":" << new_port << std::endl;
+
+            std::cout << "[FE] Updating state of active client sessions..." << std::endl;
+
             std::lock_guard<std::mutex> sessions_lock(g_sessions_mutex);
-            
+
             for (auto const& [username, session_ptr] : g_active_sessions) {
-                // Bloqueia cada sessão individualmente para atualizar seu estado
                 std::lock_guard<std::mutex> session_lock(session_ptr->mtx);
-                
-                // Apenas atualizamos o IP do primário que esta sessão deve usar.
-                // O mapa de portas (port_map) agora está obsoleto para esta sessão,
-                // mas ele será corrigido automaticamente pela lógica de recuperação
-                // na próxima vez que o cliente tentar uma operação.
+
+                // We only update the IP of the primary that this session should use.
+                // The port map (port_map) is now outdated for this session,
+                // but it will be corrected automatically by the recovery logic
+                // the next time the client attempts an operation.
                 session_ptr->current_rm_ip = new_ip_str;
             }
-            std::cout << "[FE] Todas as sessões ativas foram atualizadas para o novo líder." << std::endl;
-        
+            std::cout << "[FE] All active sessions have been updated to the new leader." << std::endl;
         }
     }
 }
@@ -276,7 +266,7 @@ void forward_data(int source_sock, int dest_sock) {
     close(dest_sock);
 }
 
-// --- Implementação das Funções Auxiliares de Socket ---
+// --- Socket Utility Function Implementations ---
 int create_listening_socket(int port) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) { perror("[FE Helper] socket"); return -1; }
@@ -308,20 +298,20 @@ bool recover_session_handshake(std::shared_ptr<ClientSession> session) {
     }
 
     if (session->current_rm_ip == new_primary_addr.ip) {
-        std::cerr << "[FE-RECOVERY] Sessão já aponta para o líder atual. A falha pode ser outra." << std::endl;
+        std::cerr << "[FE-RECOVERY] Session already points to the current leader. The failure might be something else." << std::endl;
         return false;
     }
 
-    std::cout << "[FE-RECOVERY] Tentando re-handshake com o novo líder: " << new_primary_addr.ip << std::endl;
+    std::cout << "[FE-RECOVERY] Trying re-handshake with the new leader: " << new_primary_addr.ip << std::endl;
 
     int rm_sock = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in rm_addr{};
     rm_addr.sin_family = AF_INET;
-    rm_addr.sin_port = htons(new_primary_addr.port); // Porta 4000
+    rm_addr.sin_port = htons(new_primary_addr.port);
     inet_pton(AF_INET, new_primary_addr.ip.c_str(), &rm_addr.sin_addr);
 
     if (connect(rm_sock, (struct sockaddr*)&rm_addr, sizeof(rm_addr)) < 0) {
-        perror("[FE-RECOVERY] Falha ao conectar ao novo primário");
+        perror("[FE-RECOVERY] Failed to connect to the new primary");
         close(rm_sock);
         return false;
     }
@@ -332,20 +322,20 @@ bool recover_session_handshake(std::shared_ptr<ClientSession> session) {
     memcpy(pkt.payload, session->username.c_str(), pkt.length);
     send_packet(rm_sock, pkt);
 
-    recv_packet(rm_sock, pkt); // Recebe o "OK"
-    recv_packet(rm_sock, pkt); // Recebe as NOVAS portas reais
+    recv_packet(rm_sock, pkt); // Receives "OK"
+    recv_packet(rm_sock, pkt); // Receives new real ports
     close(rm_sock);
 
     std::string new_real_ports_str(pkt.payload, pkt.length);
-    std::cout << "[FE-RECOVERY] Novas portas reais recebidas: " << new_real_ports_str << std::endl;
-    
+    std::cout << "[FE-RECOVERY] New real ports received: " << new_real_ports_str << std::endl;
+
     int new_real_cmd, new_real_watch, new_real_file;
     sscanf(new_real_ports_str.c_str(), "%d|%d|%d", &new_real_cmd, &new_real_watch, &new_real_file);
-    
+
     std::vector<int> new_real_ports = {new_real_cmd, new_real_watch, new_real_file};
 
     int i = 0;
-    // As chaves (portas falsas) do mapa não mudam. Apenas os valores (portas reais) são atualizados.
+    // The keys (fake ports) of the map don't change. Only the values (real ports) are updated.
     for (auto it = session->port_map.begin(); it != session->port_map.end(); ++it) {
         it->second = new_real_ports[i++];
     }
