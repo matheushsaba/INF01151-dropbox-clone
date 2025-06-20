@@ -19,6 +19,9 @@
 #include "heartbeat.h"
 #include <atomic>
 #include "election_bully.h"
+#include "replication.h"
+
+
 
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
