@@ -23,10 +23,6 @@ RUN make clean && make
 # Use the same base image for runtime to ensure library compatibility.
 FROM ubuntu:22.04
 
-# Install the C++ runtime library, which is needed by the compiled executable.
-# This ensures the runtime environment has the same libstdc++ version as the build environment.
-RUN apt-get update && apt-get install -y libstdc++6 netcat-openbsd && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 # Copy only the compiled binaries from the builder stage to the final image.
 COPY --from=builder /app/bin/ ./bin/

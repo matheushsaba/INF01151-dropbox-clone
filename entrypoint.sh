@@ -14,40 +14,33 @@ fi
 # List of all services in the cluster
 ALL_SERVICES="primary backup1 backup2"
 
-# Function to wait for a host and port to be open
-wait_for_service() {
-    host="$1"
-    port="$2"
-    echo "INFO: [${SERVICE_NAME}] Waiting for service '$host:$port' to be ready..."
-    timeout=30 # seconds
-    for i in $(seq $timeout); do
-        if nc -z -w 1 "$host" "$port"; then
-            echo "INFO: [${SERVICE_NAME}] Service '$host:$port' is ready."
-            return 0
-        fi
-        sleep 1
-    done
-    echo "Error: [${SERVICE_NAME}] Service '$host:$port' did not become ready within $timeout seconds."
-    exit 1 # Exit if the service doesn't become ready
-}
-
-# Logic for primary vs. backups
-if [ "$SERVICE_NAME" = "primary" ]; then
-    # Primary server: It doesn't need to wait for backups to start its own services.
-    # It just needs to ensure its own DNS entry is available (which it is by this point).
-    echo "INFO: [${SERVICE_NAME}] Primary server, proceeding to start."
-else
-    # Backup servers: They need to wait for the primary's heartbeat port (5001) to be open.
-    wait_for_service "primary" 5001
-fi
-
 echo "--- [${SERVICE_NAME}] All services are up. Verifying IPs... ---"
 for service in $ALL_SERVICES; do
-    IP=$(getent hosts "$service" | awk '{print $1}')
+    # IP=$(getent hosts "$service" | awk '{print $1}')
+    # Use timeout to prevent long waits for services that are not yet up.
+    # Redirect stderr to /dev/null to suppress errors if the host is not found.
+    IP=$(timeout 0.5 getent hosts "$service" 2>/dev/null | awk '{print $1}')
     printf "  %-10s: %s\n" "$service" "$IP"
 done
 echo "------------------------------------------------------------"
 
 # Execute the command passed from docker-compose.yml (e.g., ["./bin/server_exec", "-p", ...])
 echo "INFO: [${SERVICE_NAME}] Starting server with command: $@"
-exec "$@"
+
+if [ "$SERVICE_NAME" = "primary" ]; then
+    # Start the server in the background so we can wait for it
+    "$@" &
+    SERVER_PID=$!
+
+    echo "========================================================"
+    echo "✅  PRIMARY SERVER IS READY. You can now start backups."
+    echo "========================================================"
+
+    wait $SERVER_PID # Wait for the server process to exit
+else
+    exec "$@" # Backups can start directly
+
+    echo "========================================================"
+    echo "✅  BACKUP SERVER IS READY."
+    echo "========================================================"
+fi
