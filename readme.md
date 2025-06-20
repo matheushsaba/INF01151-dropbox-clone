@@ -97,8 +97,22 @@ Em outro terminal, iniciar o mesmo cliente (ex: testuser):
 # **Exemplo local**: abrir novo terminal e rodar:
 ./bin/myClient testuser 127.0.0.1 4000
 ```
+Após conectar, o cliente exibe um menu interativo.
 
 ---
+
+## 💬 Comandos Disponíveis no Cliente
+
+| Comando                           | Descrição                             |
+| --------------------------------- | ------------------------------------- |
+| `upload <caminho_arquivo>`        | Envia arquivo ao servidor             |
+| `download <nome_arquivo>`         | Baixa arquivo do servidor             |
+| `list_server`                     | Lista arquivos do usuário no servidor |
+| `delete <nome_arquivo>`           | Remove arquivo do servidor            |
+| `exit`                            | Encerra a conexão                     |
+
+---
+
 ## 🚀 Testando um Upload Rápido
 
 ```bash
