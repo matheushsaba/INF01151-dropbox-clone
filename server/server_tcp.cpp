@@ -617,16 +617,16 @@ int main(int argc, char* argv[])
     // Determine the server's role based on the parsed role_flag.
     if (role_flag == "-p")
     {
-        g_role.store(ROLE_PRIMARY); // Set the global role to PRIMARY.
+        g_role.store(ROLE_PRIMARY); // Set the global role to primary
         std::cout << "Starting as PRIMARY on " << my_ip << '\n';
-        run_as_primary();                        // Start primary server functionalities; this function blocks indefinitely.
+        run_as_primary(); // Blocks indefinitely
     }
     else if (role_flag == "-b")
     {
-        g_role.store(ROLE_BACKUP);  // Set the global role to BACKUP.
         std::cout << "Starting as BACKUP on " << my_ip
                   << "  (primary = " << primary_ip << ")\n";
-        run_as_backup(primary_ip);               // blocks until promoted
+        g_role.store(ROLE_BACKUP);  // Set the global role to backup
+        run_as_backup(primary_ip);  // Blocks until promoted to primary
     }
     else
     {

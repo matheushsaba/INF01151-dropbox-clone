@@ -7,19 +7,26 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/select.h>
+#include <mutex>
+#include <condition_variable>
 #include <cstring>
 #include <iostream>
 #include <random>
 
 namespace {
 
-constexpr int ELECTION_PORT = 5002;       // UDP port for election messages
-constexpr int OK_WAIT_MS = 1000;          // wait for OK from better candidate
+constexpr int ELECTION_PORT = 5002;      // UDP port for election messages
+constexpr int OK_WAIT_MS    = 1000;      // wait for OK from better candidate
 
-static uint32_t     g_my_pid;             // my numeric priority
-static std::string  g_my_ip;              // dotted quad
+static std::mutex               g_election_mutex;
+static std::condition_variable  g_election_cv;
+static bool                     g_election_in_progress = false;
+static bool                     g_received_ok = false;
+
+static uint32_t                 g_my_pid; // my numeric priority
+static std::string              g_my_ip;  // dotted quad
 static std::vector<std::string> g_peers;  // runtime list of backup servers
-static int          g_sock;               // UDP socket
+static int          g_sock;               // TCP listening socket
 
 // Helper to extract the last octet from an IP address string.
 uint8_t get_last_ip_octet(const std::string& ip)
@@ -53,88 +60,72 @@ uint8_t get_last_ip_octet(const std::string& ip)
 // Helper function to send a packet to a specific IP address
 void send_election_packet(const std::string& ip, uint8_t type, uint32_t pid_payload)
 {
-    // Create a structure to hold the destination address information
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        // This can be noisy, and failure is expected if a peer is down.
+        // perror("[ELECT] socket creation failed");
+        return;
+    }
+
     sockaddr_in to{};
     to.sin_family = AF_INET;
     to.sin_port   = htons(ELECTION_PORT);
-    inet_pton(AF_INET, ip.c_str(), &to.sin_addr);
+    if (inet_pton(AF_INET, ip.c_str(), &to.sin_addr) <= 0) {
+        // std::cerr << "[ELECT] Invalid address " << ip << '\n';
+        close(sock);
+        return;
+    }
 
-    // Create a new packet to be sent. It can be "Election", "Ok" or "Coordinator"
+    if (connect(sock, reinterpret_cast<sockaddr*>(&to), sizeof(to)) < 0) {
+        // This is expected if a peer is down, so don't print perror unless debugging.
+        close(sock);
+        return;
+    }
+
     Packet p{};
     p.type = type;
     p.length = sizeof(pid_payload);
     std::memcpy(p.payload, &pid_payload, sizeof(pid_payload));
 
-    // Send the packet over the global UDP socket
-    sendto(g_sock, &p, sizeof(p.type)+sizeof(p.length)+p.length, 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
+    send_packet(sock, p);
+    close(sock);
 }
 
-// This function runs in a dedicated thread to listen for and handle incoming election-related messages.
-void listener()
+void handle_election_connection(int sock, sockaddr_in addr)
 {
-    Packet pkt;                              
-    sockaddr_in sender_address{};                       
-    socklen_t len = sizeof(sender_address);             
-    uint32_t sender_pid;                     
+    Packet pkt;
+    if (!recv_packet(sock, pkt)) {
+        close(sock);
+        return;
+    }
+    close(sock); // We're done with this connection.
 
-    // Start an infinite loop to continuously listen for messages on the election socket
-    while (true) 
-    {
-        // Block and wait to receive a UDP packet, storing the sender's address
-        int n = recvfrom(g_sock, &pkt, sizeof(pkt), 0, reinterpret_cast<sockaddr*>(&sender_address), &len);
-        if (n < 4) 
-        {
-            // If the received data is too small to be a valid packet, ignore it and continue
-            continue;
+    char ipbuf[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &addr.sin_addr, ipbuf, sizeof ipbuf);
+
+    uint32_t sender_pid;
+    if (pkt.length < sizeof(sender_pid)) {
+        return; // Malformed packet
+    }
+    std::memcpy(&sender_pid, pkt.payload, sizeof(sender_pid));
+
+    if (pkt.type == PACKET_TYPE_ELECT) {
+        if (g_my_pid > sender_pid) {
+            send_election_packet(ipbuf, PACKET_TYPE_OK, g_my_pid);
+            bully_start();
         }
-
-        char ipbuf[INET_ADDRSTRLEN];                 // Declare a buffer to hold the sender's IP address in string format.
-        inet_ntop(AF_INET, &sender_address.sin_addr, ipbuf, sizeof ipbuf); // Convert the sender's binary IP address to a human-readable string.
-
-        std::memcpy(&sender_pid, pkt.payload, sizeof(sender_pid)); // Copy the sender's PID from the packet's payload into the sender_pid variable.
-
-        if (pkt.type == PACKET_TYPE_ELECT) 
+    } else if (pkt.type == PACKET_TYPE_OK) {
+        std::lock_guard<std::mutex> lock(g_election_mutex);
+        g_received_ok = true;
+        g_election_cv.notify_one();
+    } else if (pkt.type == PACKET_TYPE_COORD) {
+        std::cout << "[ELECT] New coordinator: PID " << sender_pid << " (" << ipbuf << ")\n";
         {
-            // If current PID is greater than the sender's, this server should be elected
-            // as the new leader
-            if (g_my_pid > sender_pid) 
-            {
-                // Send an "OK" message back to the sender to stop their election attempt
-                send_election_packet(ipbuf, PACKET_TYPE_OK, g_my_pid);
-                // Start this process own election process since it is a better candidate
-                bully_start();                       
-            }
+            std::lock_guard<std::mutex> lock(g_election_mutex);
+            g_election_in_progress = false;
+            g_received_ok = false;
         }
-        else if (pkt.type == PACKET_TYPE_COORD) 
-        {
-            // Print a message announcing the new coordinator (leader) and its PID/IP.
-            std::cout << "[ELECT] New coordinator: PID " << sender_pid << " (" << ipbuf << ")\n";
-            // The election is over; this server will remain a backup.
-        }
-        else if (pkt.type == PACKET_TYPE_PEERLIST) 
-        {
-            std::string csv(pkt.payload, pkt.length); 
-            std::vector<std::string> lst;             
-            size_t pos = 0;                           
-
-            while ((pos = csv.find(',')) != std::string::npos) 
-            { 
-                // Loop through the CSV string, splitting it by commas to extract each IP
-                lst.push_back(csv.substr(0, pos));
-                csv.erase(0, pos + 1);
-            }
-
-            if (!csv.empty()) 
-            {
-                // Add the last remaining IP to the list
-                lst.push_back(csv);
-            }
-
-            // Update the global list of peers with the new list
-            bully_set_peer_list(lst);                 
-
-            std::cout << "[ELECT] Updated peer list (" << lst.size() << ")\n";
-        }
+        start_backup_heartbeat_listener(ipbuf);
     }
 }
 
@@ -143,8 +134,16 @@ void do_election()
 {
     std::cout << "[ELECT] Starting election, my PID=" << g_my_pid << '\n';
 
-    // Iterate through all known peer IP addresses to send them an election message.
-    for (auto& ip : g_peers)
+    std::vector<std::string> current_peers;
+    {
+        // Lock the mutex to safely copy the shared g_peers vector. This prevents
+        // data races if the list is being updated by another thread.
+        std::lock_guard<std::mutex> lock(g_election_mutex);
+        current_peers = g_peers;
+    }
+
+    // Iterate through the local copy of peer IPs to send them an election message.
+    for (auto& ip : current_peers)
     {
         // Avoid sending messages to itself
         if (ip != g_my_ip)
@@ -154,39 +153,60 @@ void do_election()
         }
     }
 
-    // Wait OK from any bigger pid
-    // Initialize a file descriptor set to monitor the election socket for incoming data
-    fd_set rd;
-    FD_ZERO(&rd);
-    FD_SET(g_sock,&rd);
-    // Define the maximum time to wait for a response from a peer with a bigger pid
-    timeval tv{ OK_WAIT_MS/1000, (OK_WAIT_MS%1000)*1000 };
+    // Wait for a potential "OK" response, which would be caught by the listener.
+    // The listener will set g_received_ok and notify our condition variable.
+    std::unique_lock<std::mutex> lock(g_election_mutex);
+    g_received_ok = false; // Reset for this election attempt.
 
-    // Wait on the socket for an incoming message, with a timeout.
-    if (select(g_sock+1, &rd, nullptr, nullptr, &tv) <= 0) 
+    // Wait for an OK from a higher-PID peer. `wait_for` returns true if notified, false on timeout.
+    if (g_election_cv.wait_for(lock, std::chrono::milliseconds(OK_WAIT_MS), []{ return g_received_ok; }))
     {
-        // If select() times out (returns 0) or errors (returns <0), no peer with a bigger pid
-        // has replied, so this server wins
-        std::cout << "[ELECT] Won election, broadcasting coordinator\n";
-
-        // Iterate through all peers to announce the new leader
-        for (auto& ip : g_peers)
-        {
-            // Do not send the coordinator message to itself
-            if (ip != g_my_ip)
-            {
-                // Send a COORDINATOR packet to inform the peer that this server is the new leader.
-                send_election_packet(ip, PACKET_TYPE_COORD, g_my_pid);
-            }
-        }
-
-        // Transition this server's role from backup to primary
-        promote_to_primary();
+        // We were woken up because g_received_ok became true. We lost the election.
+        std::cout << "[ELECT] Received OK, backing down.\n";
+        g_election_in_progress = false; // Allow a new election to start.
+        return; // End this election thread.
     }
 
-    // If select() returns > 0, an "OK" was received, so this server backs down and waits for a new COORDINATOR.
+    // Timed out. Before declaring victory, we MUST re-check if a COORD message
+    // arrived and cancelled the election while we were waiting. This fixes the race condition.
+    if (!g_election_in_progress) {
+        std::cout << "[ELECT] Coordinator announced during our election, backing down.\n";
+        return; // A new leader was chosen by others while we were waiting.
+    }
+
+    // If we reach here, we timed out and no other coordinator was announced. We are the winner.
+    lock.unlock(); // It's now safe to release the lock before broadcasting and promoting.
+
+    std::cout << "[ELECT] Won election, broadcasting coordinator\n";
+
+    // Iterate through all peers to announce our new leadership.
+    for (auto& ip : g_peers) {
+        if (ip != g_my_ip) {
+            send_election_packet(ip, PACKET_TYPE_COORD, g_my_pid);
+        }
+    }
+
+    // Transition this server's role from backup to primary.
+    promote_to_primary();
 }
 
+// This function runs in a dedicated thread to listen for and handle incoming election-related messages.
+void listener()
+{
+    while (true)
+    {
+        sockaddr_in client_addr{};
+        socklen_t len = sizeof(client_addr);
+        int client_sock = accept(g_sock, reinterpret_cast<sockaddr*>(&client_addr), &len);
+        if (client_sock < 0) {
+            perror("[ELECT] accept failed");
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+        // Pass client_addr by value to the thread to avoid data races on the stack variable.
+        std::thread(handle_election_connection, client_sock, client_addr).detach();
+    }
+}
 
 } // unnamed namespace
 
@@ -204,16 +224,34 @@ void bully_init(const std::string& my_ip)
     // Store this server's own IP address, passed from the command line
     g_my_ip = my_ip;
 
-    // Create a UDP socket for sending and receiving all election-related messages
-    g_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    g_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (g_sock < 0) {
+        perror("[ELECT] socket creation failed");
+        std::exit(EXIT_FAILURE);
+    }
+
+    int on = 1;
+    setsockopt(g_sock, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+
     sockaddr_in this_server_address{};
-    this_server_address.sin_family=AF_INET;
-    this_server_address.sin_port=htons(ELECTION_PORT);
+    this_server_address.sin_family = AF_INET;
+    this_server_address.sin_port = htons(ELECTION_PORT);
     this_server_address.sin_addr.s_addr = INADDR_ANY;
-    bind(g_sock, reinterpret_cast<sockaddr*>(&this_server_address), sizeof(this_server_address));
+    if (bind(g_sock, reinterpret_cast<sockaddr*>(&this_server_address), sizeof(this_server_address)) < 0) {
+        perror("[ELECT] bind failed");
+        close(g_sock);
+        std::exit(EXIT_FAILURE);
+    }
+
+    if (listen(g_sock, 10) < 0) {
+        perror("[ELECT] listen failed");
+        close(g_sock);
+        std::exit(EXIT_FAILURE);
+    }
 
     std::cout << "[ELECT] Initialized with priority PID=" << g_my_pid
               << " (base_pid=" << base_pid << ", ip_octet=" << static_cast<int>(last_octet) << ")\n";
+    std::cout << "[ELECT] Listening for TCP election messages on port " << ELECTION_PORT << '\n';
 
     // Start the listener function in a new, detached thread
     std::thread(listener).detach();
@@ -224,11 +262,18 @@ void bully_init(const std::string& my_ip)
 // Triggers a new leader election process to run in a background thread
 void bully_start()
 {
+    std::lock_guard<std::mutex> lock(g_election_mutex);
+    if (g_election_in_progress) {
+        return; // An election is already in progress.
+    }
+    g_election_in_progress = true;
     std::thread(do_election).detach();
 }
 
 // Updates the internal list of peer IPs to run elections
 void bully_set_peer_list(const std::vector<std::string>& peers)
 {
+    // Lock the mutex to ensure thread-safe updates to the shared peer list.
+    std::lock_guard<std::mutex> lock(g_election_mutex);
     g_peers = peers;
 }

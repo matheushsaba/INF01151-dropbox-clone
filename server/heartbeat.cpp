@@ -37,7 +37,7 @@ void hb_broadcast_peerlist()
 
     Packet pl{}; 
     pl.type = PACKET_TYPE_PEERLIST;
-    pl.length = csv.size();
+    pl.length = std::min((int)csv.size(), MAX_PAYLOAD_SIZE); // Ensure payload fits within MAX_PAYLOAD_SIZE
     memcpy(pl.payload, csv.data(), pl.length);
 
     // Acquire a lock on the heartbeat mutex to avoid race conditions on hb_clients vector
@@ -256,7 +256,7 @@ void backup_heartbeat_watch_loop(int sock)
         {
             std::cerr << "[HB] LOST - Primary unresponsive\n";
             std::cerr << "[HB] LOST - Starting election\n";
-            // bully_start();
+            bully_start();
             return;
         }
     }
