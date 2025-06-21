@@ -12,7 +12,7 @@ if [ -z "$SERVICE_NAME" ]; then
 fi
 
 # List of all services in the cluster
-ALL_SERVICES="primary backup1 backup2"
+ALL_SERVICES="frontend primary backup1 backup2"
 
 echo "--- [${SERVICE_NAME}] All services are up. Verifying IPs... ---"
 for service in $ALL_SERVICES; do

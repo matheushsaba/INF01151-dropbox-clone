@@ -25,8 +25,25 @@ services:
         ipv4_address: 172.28.0.10
     # Map port 4000 on the host to port 4000 on this container.
     # This allows a client running on your Windows machine to connect to the primary.
+
+  # The Primary Server
+  frontend:
+    build: . # Build the image from the Dockerfile in the current directory
+    container_name: frontend-server
+    # The command now uses a hardcoded IP address.
+    command: ["./bin/frontend_exec", "172.28.0.10", "4000"]
+    environment:
+      - SERVICE_NAME=frontend
+    networks:
+      dropbox-net:
+        # Assign a static IP to this container
+        ipv4_address: 172.28.0.13
+    # Map port 4000 on the host to port 4000 on this container.
+    # This allows a client running on your Windows machine to connect to the primary.
     ports:
       - "4000:4000"
+      - "8080:8080"
+      - "9090:9090"
 
   # The First Backup Server
   backup1:
