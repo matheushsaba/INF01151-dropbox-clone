@@ -12,6 +12,7 @@
 #include <cstring>
 #include <algorithm>
 #include <sys/socket.h>
+#include "server_tcp.cpp"
 
 // cstring, algorithm, + from server_tcp.cpp
 
@@ -81,8 +82,7 @@ void start_primary_replication_listener() {
             std::cout << "[Primary] new backup connected to replication listener from " << ip_str << " (fd=" << backup_connected_socket << ")\n";
             
             // new detatched thread to handle this specific backup requests (like initial sync)
-            //COMMENTING BELOW SO I CAN COMPILE BEFORE IMPLEMENTING IT!!!
-            //std::thread(handle_backup_initial_sync_request, backup_connected_socket).detach();
+            std::thread(handle_backup_initial_sync_request, backup_connected_socket).detach();
         }
     }).detach();
 }
@@ -126,5 +126,281 @@ void connect_to_all_backup_replication_ports_for_push() {
     }
 }
 
-void replicate_file_change(const std::string& username, const std::string& filename, PacketType change_type);
+void replicate_file_change(const std::string& username, const std::string& filename, PacketType change_type){
+    // mutex to ensure exclusive access to the list of peers and to ensure
+    // each replication happens at a time
+    std::lock_guard<std::mutex> lock(g_replication_peers_mtx);
+
+    std::string full_path;
+    if (change_type == PACKET_TYPE_DATA) { //for uploads/modifies
+        full_path = get_sync_dir(username) + "/" + filename;
+        if (!std::filesystem::exists(full_path)) {
+            std::cerr << "[Primary] Cannot replicate upload: file " << full_path << " does not exist locally.\n";
+            return;
+        }
+    }
+
+    // header packet: 
+    Packet header_pkt{};
+    header_pkt.type = PACKET_TYPE_CMD;
+    std::string header_msg;
+
+    if (change_type == PACKET_TYPE_DATA) { // upload or modify
+        header_msg = "replicate_upload|" + username + "|" + filename;
+    } else if (change_type == PACKET_TYPE_DELETE) { // delete
+        header_msg = "replicate_delete|" + username + "|" + filename;
+    } else {
+        std::cerr << "[Primary] Unsupported replication change type: " << change_type << ". Aborting replication.\n";
+        return;
+    }
+
+    header_pkt.length = std::min((int)header_msg.size(), MAX_PAYLOAD_SIZE);
+    std::memcpy(header_pkt.payload, header_msg.c_str(), header_pkt.length);
+
+    // iterating to push the changes to each backup
+    for (auto& peer_info : g_replication_peers) {
+        // try to establish connection if not already connected
+        if (peer_info.push_socket_fd == -1) {
+            std::cerr << "[Primary] Attempting to reconnect to backup " << peer_info.ip << ":" << peer_info.port << " for push replication.\n";
+            int s = socket(AF_INET, SOCK_STREAM, 0);
+            if (s < 0) { 
+                perror("socket reconnect for replication"); 
+                continue; 
+            }
+
+            sockaddr_in sa{};
+            sa.sin_family = AF_INET;
+            sa.sin_port = htons(peer_info.port);
+            if (inet_pton(AF_INET, peer_info.ip.c_str(), &(sa.sin_addr)) != 1){
+                std::cerr << "[Primary] Invalid IP address for peer " << peer_info.ip << " for push replication.\n";
+                close(s);
+                continue;
+            }
+            if (connect(s, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) < 0) {
+                std::cerr << "[Primary] reconnect failed to " << peer_info.ip << ":" << peer_info.port << " for push replication. Skipping.\n";
+                close(s); // skip this peer for this replication round
+                continue;
+            }
+            peer_info.push_socket_fd = s; // store the established socket
+            std::cout << "[Primary] Reconnected to backup " << peer_info.ip << ":" << peer_info.port << " for push replication (fd=" << s << ").\n";
+        }
+
+        std::cout << "[Primary] Replicating " << filename << " (" << header_msg << ") to backup " << peer_info.ip << "...\n";
+        
+        if (!send_packet(peer_info.push_socket_fd, header_pkt)) {
+            std::cerr << "[Primary] Error sending replication header to " << peer_info.ip << ". Closing socket.\n";
+            close(peer_info.push_socket_fd); 
+            peer_info.push_socket_fd = -1; // mark as disconnected
+            continue;
+        }
+
+        if (change_type == PACKET_TYPE_DATA) { // upload or modify
+            std::ifstream file(full_path, std::ios::binary);
+            if (!file.is_open()) {
+                std::cerr << "[Primary] Error opening file " << full_path << " for replication.\n"; // why do we need to open it??
+                continue;
+            }
+            char buffer[MAX_PAYLOAD_SIZE];
+            int seqn = 1;
+            Packet data_pkt{};
+            while (file.read(buffer, MAX_PAYLOAD_SIZE) || file.gcount() > 0) {
+                data_pkt.type = PACKET_TYPE_DATA;
+                data_pkt.seqn = seqn++;
+                data_pkt.length = file.gcount();
+                std::memcpy(data_pkt.payload, buffer, data_pkt.length);
+                if (!send_packet(peer_info.push_socket_fd, data_pkt)) {
+                    std::cerr << "[Primary] Error sending data to " << peer_info.ip << ". Closing socket.\n";
+                    close(peer_info.push_socket_fd);
+                    peer_info.push_socket_fd = -1; // mark as disconnected
+                    file.close();
+                    break;
+                }
+            }
+
+            // send EOF marker
+            data_pkt.type = PACKET_TYPE_END;
+            data_pkt.seqn = seqn;
+            data_pkt.length = 0; // end of data stream
+            if (!send_packet(peer_info.push_socket_fd, data_pkt)) {
+                std::cerr << "[Primary] Error sending EOF to " << peer_info.ip << ". Closing socket.\n";
+                close(peer_info.push_socket_fd);
+                peer_info.push_socket_fd = -1;
+                continue;
+            }
+
+            file.close();
+        }
+        // wait for ACK from the backup server
+        Packet ack_pkt;
+        if (!recv_packet(peer_info.push_socket_fd, ack_pkt)) { // blocking recv_packet!!
+            std::cerr << "[Primary] Error receiving ACK from " << peer_info.ip << ". Closing socket.\n";
+            close(peer_info.push_socket_fd);
+            peer_info.push_socket_fd = -1;
+            continue; // move to the next peer
+        }
+        std::cout << "[Primary] Replication of " << filename << " to " << peer_info.ip << " successful (ACK received).\n";
+    }
+}
+
+// backups:
+
+void start_backup_replication_listener() {
+    int listener_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener_socket < 0) {
+        perror("error opening backup replication listener socket");
+        return; // won't receive pushes but still can participate in elections
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(REPLICATION_PORT);
+
+    int optval = 1;
+    if (setsockopt(listener_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+        perror("setsockopt SO_REUSEADDR failed for backup replication listener");
+        close(listener_socket);
+        return;
+    }
+
+    if (bind(listener_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        perror("Error binding backup replication listener socket");
+        close(listener_socket);
+        return;
+    }
+    if (listen(listener_socket, 1) < 0) { // 1 connection (with the primary)
+        perror("Error listening on backup replication listener socket");
+        close(listener_socket);
+        return;
+    }
+
+    std::cout << "[Backup] Replication listener active on port " << REPLICATION_PORT << " (for primary pushes)...\n";
+
+    // the following thread waits for a connection from the primary
+    // and if a new one is elected, it accepts the new conection
+    std::thread([listener_socket]() {
+        while (true) {
+            sockaddr_in primary_addr{};
+            socklen_t primary_len = sizeof(primary_addr);
+            int primary_connected_socket = accept(listener_socket, reinterpret_cast<sockaddr*>(&primary_addr), &primary_len);
+            if (primary_connected_socket < 0) {
+                perror("accept failed on backup replication listener");
+                continue;
+            }
+            char ip_str[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &(primary_addr.sin_addr), ip_str, INET_ADDRSTRLEN);
+            std::cout << "[Backup] Connected to primary " << ip_str << ':' << ntohs(primary_addr.sin_port) << '\n';
+            
+            // detatch a thread to continuously handle incoming replication data from the primary
+            std::thread(handle_primary_replication_push, primary_connected_socket).detach();
+        }
+    }).detach();
+}
+
+void request_full_sync_from_primary(const std::string& primary_ip) {
+    std::cout << "[Backup] Requesting full sync from primary " << primary_ip << ":" << REPLICATION_PORT << '\n';
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) { 
+        perror("[Backup sync] socket creation failed");
+        return; 
+    }
+
+    sockaddr_in sa{};
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(REPLICATION_PORT);
+    if (inet_pton(AF_INET, primary_ip.c_str(), &(sa.sin_addr)) != 1) {
+        std::cerr << "[Backup sync] Invalid IP address for primary " << primary_ip << '\n';
+        close(s);
+        return;
+    }
+
+    // send full sync request command:
+    Packet req_pkt{};
+    req_pkt.type = PACKET_TYPE_CMD;
+    std::string req_msg = "FULL_SYNC_REQUEST";
+    req_pkt.length = std::min((int)req_msg.size(), MAX_PAYLOAD_SIZE);
+    std::memcpy(req_pkt.payload, req_msg.c_str(), req_pkt.length);
+    if (!send_packet(s, req_pkt)) {
+        std::cerr << "[Backup sync] Error sending sync request to the primary. Closing socket.\n";
+        close(s);
+        return;
+    }
+    std::cout << "[Backup sync] sent FULL_SYNC_REQUEST to primary. \n";
+
+    // receive files/commands from primary
+    Packet pkt;
+    std::string current_username;
+    std::string current_filename; 
+    std::ofstream outfile;
+    bool expecting_file_data = false;
+    while (recv_packet(s, pkt)) {
+        if (pkt.type == PACKET_TYPE_CMD) {
+            std::string header(pkt.payload, pkt.length);
+            if (header.rfind("replicate_upload|", 0) == 0) {
+                if (outfile.is_open()) outfile.close(); // closes any file opened previously
+                size_t p1 = header.find('|');
+                size_t p2 = header.find('|', p1 + 1);
+                current_username = header.substr(p1 + 1, p2 - p1 - 1);
+                current_filename = header.substr(p2 + 1);
+                std::string full_path = get_sync_dir(current_username) + "/" + current_filename;
+
+                // protect file operations:
+                std::lock_guard<std::mutex> lock(file_mutex);
+                outfile.open(full_path, std::ios::binary);
+                if (!outfile.is_open()) {
+                    std::cerr << "[Backup sync] failed to open file for writing: " << full_path << '\n';
+                    continue;
+                }
+                expecting_file_data = true;
+                std::cout << "[Backup Sync] Receiving file: " << full_path << '\n';
+
+            } else if (header.rfind("replicate_delete|", 0) == 0) {
+                if (outfile.is_open()) outfile.close(); // close any previously open file
+                size_t p1 = header.find('|');
+                size_t p2 = header.find('|', p1 + 1);
+                current_username = header.substr(p1 + 1, p2 - p1 - 1);
+                current_filename = header.substr(p2 + 1);
+                std::string full_path = get_sync_dir(current_username) + "/" + current_filename;
+
+                std::lock_guard<std::mutex> lock(file_mutex); // protect file operation
+                if (std::filesystem::remove(full_path)) {
+                    std::cout << "[Backup Sync] Deleted file: " << full_path << '\n';
+                } else {
+                    std::cerr << "[Backup Sync] Error deleting file: " << full_path << '\n';
+                }
+                expecting_file_data = false; // No data expected after delete
+            }
+        } else if (pkt.type == PACKET_TYPE_DATA && expecting_file_data) {
+            if (outfile.is_open()) {
+                outfile.write(pkt.payload, pkt.length);
+                if (!outfile) {
+                    std::cerr << "[Backup Sync] error writing file data during sync. Closing file: " << current_filename << '\n';
+                    outfile.close();
+                    expecting_file_data = false;
+                }
+            }
+        } else if (pkt.type == PACKET_TYPE_END && expecting_file_data) {
+            if (outfile.is_open()) {
+                outfile.close();
+                std::cout << "[Backup Sync] File received and saved: " << current_filename << '\n';
+            }
+            expecting_file_data = false;
+        } else if (pkt.type == PACKET_TYPE_ACK) {
+            std::string ack_msg(pkt.payload, pkt.length);
+            if (ack_msg == "FULL_SYNC_COMPLETE") {
+                std::cout << "[Backup Sync] Full synchronization complete.\n";
+                break; // exit the loop when full sync is confirmed
+            } else {
+                std::cout << "[Backup Sync] Received unexpected ACK: " << ack_msg << '\n';
+            }
+        } else {
+            std::cerr << "[Backup Sync] Received unexpected packet type " << pkt.type << ".\n";
+        }
+    }
+    if (outfile.is_open()) outfile.close();
+    close(s);
+}
+
+
+
 
