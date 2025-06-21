@@ -25,6 +25,7 @@ static bool                     g_election_in_progress = false;
 static bool                     g_received_ok = false;
 
 static uint32_t                 g_my_pid; // my numeric priority
+static std::string              g_frontend_ip = "127.0.0.1"; // Default, can be overridden
 static std::string              g_my_ip;  // dotted quad
 static std::vector<std::string> g_peers;  // runtime list of backup servers
 static int          g_sock;               // TCP listening socket
@@ -167,10 +168,9 @@ void handle_election_connection(int sock, sockaddr_in addr)
 
 void notify_frontend_of_victory(const std::string& winner_ip) {
     // Address and port of the Front-End for notifications
-    const char* fe_ip = "127.0.0.1";
     const int fe_notification_port = 9090;
 
-    std::cout << "[ELECT] Attempting to notify the Front-End at " << fe_ip << ":" << fe_notification_port << "...\n";
+    std::cout << "[ELECT] Attempting to notify the Front-End at " << g_frontend_ip << ":" << fe_notification_port << "...\n";
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
@@ -181,7 +181,7 @@ void notify_frontend_of_victory(const std::string& winner_ip) {
     sockaddr_in fe_addr{};
     fe_addr.sin_family = AF_INET;
     fe_addr.sin_port = htons(fe_notification_port);
-    if (inet_pton(AF_INET, fe_ip, &fe_addr.sin_addr) <= 0) {
+    if (inet_pton(AF_INET, g_frontend_ip.c_str(), &fe_addr.sin_addr) <= 0) {
         perror("[ELECT] ERROR: Invalid FE address");
         close(sock);
         return;
@@ -295,6 +295,13 @@ void listener()
     }
 }
 
+}
+
+// This function is called only when the first server is initialized via command terminal on server_tcp
+// Sets the IP address of the frontend server for notifications.
+void bully_set_frontend_ip(const std::string& fe_ip) {
+    std::lock_guard<std::mutex> lock(g_election_mutex);
+    g_frontend_ip = fe_ip;
 }
 
 // This function is called only when the first server is initialized via command terminal on server_tcp

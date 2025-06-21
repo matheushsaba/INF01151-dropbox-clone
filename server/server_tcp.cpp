@@ -19,6 +19,7 @@
 #include "heartbeat.h"
 #include <atomic>
 #include "election_bully.h"
+#include <vector>
 
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
@@ -553,27 +554,30 @@ void run_as_backup(const std::string& primary_ip) {
     run_as_primary();
 }
 
-static void usage(const char* prog)
+static void usage(const char* prog_name)
 {
-    std::cerr << "Usage:\n"
-              << "  " << prog << " -p --ip <self_ip>\n"
-              << "  " << prog << " -b <primary_ip> --ip <self_ip>\n";
+    std::cerr << "Usage:\n";
+    std::cerr << "  Primary: " << prog_name << " -p --ip <self_ip> --frontend-ip <fe_ip>\n";
+    std::cerr << "  Backup:  " << prog_name << " -b <primary_ip> --ip <self_ip> --frontend-ip <fe_ip>\n";
+    std::cerr << "Example (Primary): " << prog_name << " -p --ip 192.168.1.10 --frontend-ip 127.0.0.1\n";
+    std::cerr << "Example (Backup):  " << prog_name << " -b 192.168.1.10 --ip 192.168.1.11 --frontend-ip 127.0.0.1\n";
 }
 
 int main(int argc, char* argv[])
 {
-    // Check for the minimum number of arguments.
-    // For primary: server -p --ip <self_ip> (4 args)
-    // For backup:  server -b <primary_ip> --ip <self_ip> (5 args, but -p needs 4)
-    if (argc < 4)
+    // Minimum args:
+    // Primary: server -p --ip <self_ip> --frontend-ip <fe_ip> (6 args)
+    // Backup:  server -b <primary_ip> --ip <self_ip> --frontend-ip <fe_ip> (7 args)
+    if (argc < 6)
     { 
         usage(argv[0]); 
         return 1; 
     }
 
-    std::string   role_flag;         // Stores the role flag ("-p" for primary, "-b" for backup).
-    std::string   primary_ip;        // Stores the IP address of the primary server (only used if this server is a backup).
-    std::string   self_ip;           // Stores the IP address of this server instance.
+    std::string role_flag;
+    std::string primary_ip;
+    std::string self_ip;
+    std::string frontend_ip;
 
     // Loop through the command-line arguments.
     for (int i = 1; i < argc; ++i)
@@ -605,6 +609,16 @@ int main(int argc, char* argv[])
             }
             self_ip = argv[i];
         }
+        else if (arg == "--frontend-ip")
+        {
+            // Check if there's another argument after --frontend-ip for the frontend_ip.
+            if (++i >= argc)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+            frontend_ip = argv[i];
+        }
         else    // unknown token
         {
             // If an unrecognized argument is found, print usage and exit.
@@ -617,12 +631,22 @@ int main(int argc, char* argv[])
     if (self_ip.empty()) 
     { 
         std::cerr << "--ip is required\n"; 
+        std::cerr << "Error: --ip is a required argument.\n";
+        usage(argv[0]);
         return 1; 
+    }
+    // Ensure that the --frontend-ip argument was provided.
+    if (frontend_ip.empty())
+    {
+        std::cerr << "Error: --frontend-ip is a required argument.\n";
+        usage(argv[0]);
+        return 1;
     }
     my_ip = self_ip;                     // Store self_ip in the global variable for use in other parts of the server.
 
     // Initialize the Bully election algorithm listener with this server's IP.
     bully_init(my_ip);
+    bully_set_frontend_ip(frontend_ip);
 
     // Determine the server's role based on the parsed role_flag.
     if (role_flag == "-p")
@@ -641,7 +665,7 @@ int main(int argc, char* argv[])
     else
     {
         // If no valid role flag (-p or -b) was provided, print usage and exit.
-        std::cerr << "Missing -p or -b flag\n";
+        std::cerr << "Error: Missing role flag -p or -b.\n";
         usage(argv[0]);
         return 1;
     }

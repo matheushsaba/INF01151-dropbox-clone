@@ -14,6 +14,7 @@
 #include <cstdio> 
 #include "../common/packet.h"
 #include "../common/common.hpp"
+#include <vector>
 
 struct Address {
     std::string ip;
