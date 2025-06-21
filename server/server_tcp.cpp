@@ -282,6 +282,7 @@ void handle_file_client(int client_socket) {
             if (std::filesystem::exists(full_path)) {
                 if (std::filesystem::remove(full_path)) {
                     std::cout << "[DELETE] " << username << '/' << filename << " removed.\n";
+                    replicate_file_change(username, filename, PACKET_TYPE_DELETE);
                 } else {
                     std::cerr << "Error removing " << full_path << '\n';
                 }
@@ -312,6 +313,7 @@ void handle_file_client(int client_socket) {
                 }
                 if (pkt.length == 0) {                       // marcador EOF
                     std::cout << "Upload successful (" << filename << ").\n";
+                    replicate_file_change(username, filename, PACKET_TYPE_DATA);
                     break;                                   // volta ao laço externo p/ próximo arquivo
                 }
                 out.write(pkt.payload, pkt.length);
@@ -511,7 +513,8 @@ void run_as_primary() {
     start_primary_heartbeat_ping();
 
     // Start the primary's dedicated replication listener for backups
-    // start_primary_replication_listener(); 
+    start_primary_replication_listener(); 
+    connect_to_all_backup_replication_ports_for_push();
 
     // Start listening to client connections
     start_primary_server_client_connections();
@@ -541,7 +544,9 @@ void run_as_backup(const std::string& primary_ip) {
     // listening for its heartbeats
     start_backup_heartbeat_listener(primary_ip);
 
-    // TODO: Listen for replication data (listen_for_replication_data)
+    // Listen for replication data (listen_for_replication_data)
+    start_backup_replication_listener();
+    request_full_sync_from_primary(primary_ip);
 
     // Stay alive until elected as new primary in a leader election
     while (g_role.load() == ROLE_BACKUP)
