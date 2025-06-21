@@ -14,21 +14,14 @@
 #include <sys/socket.h>
 #include "server_tcp.cpp"
 
-// cstring, algorithm, + from server_tcp.cpp
-
-// global variables declared as extern in .h
+// global variables
 std::vector<PeerReplicationInfo> g_replication_peers;
 std::mutex g_replication_peers_mtx;
 
 // private helper functions:
 
-/**
- * @brief Handles an incoming connection from a backup server on the primary's
- * replication listener socket.
- * This function is run in a detached thread for each backup connection.
- * It primarily responds to initial sync requests from backups.
- * @param backup_connected_socket The socket descriptor for the connected backup.
- */
+// handles an incoming connection from a backup server on the primary
+
 void handle_backup_initial_sync_request(int backup_connected_socket) {
     Packet pkt;
     // Loop to receive requests from the backup.
@@ -123,13 +116,7 @@ void handle_backup_initial_sync_request(int backup_connected_socket) {
     close(backup_connected_socket);
 }
 
-/**
- * @brief Handles incoming push replication messages from the primary.
- * This function is run in a detached thread when a backup server accepts a connection
- * from the primary on its replication listener port. It continuously receives
- * file content and delete commands and applies them to its local storage.
- * @param primary_connected_socket The socket descriptor for the connected primary.
- */
+// handles incoming push replication messages from the primary.
 void handle_primary_replication_push(int primary_connected_socket) {
     Packet pkt;
     std::string current_username;
