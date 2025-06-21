@@ -20,6 +20,7 @@
 #include <atomic>
 #include "election_bully.h"
 #include "replication.h"
+#include "server_tcp.h"
 
 
 
@@ -28,7 +29,7 @@ std::mutex socket_creation_mutex;
 
 // Global, thread-safe variable to hold the current server role.
 // std::atomic ensures that reads and writes are safe across different threads.
-enum ServerRole { ROLE_PRIMARY, ROLE_BACKUP };
+// enum ServerRole { ROLE_PRIMARY, ROLE_BACKUP };
 std::atomic<ServerRole> g_role;           // run-time role, can switch once
 
 static SessionManager session_manager;
@@ -222,7 +223,7 @@ void handle_watcher_client(int client_socket, const std::string& dir) {
             struct inotify_event* event = (struct inotify_event*) ptr;
             if (event->len) {
                 Packet notify_pkt{};
-                notify_pkt.type = PACKET_TYPE_NOTIFY; // Define this in your protocol
+                notify_pkt.type = PACKET_TYPE_NOTIFY;
                 std::string msg = "Change: ";
                 if (event->mask & IN_CREATE) msg += "Created ";
                 if (event->mask & IN_MODIFY) msg += "Modified ";

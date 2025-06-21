@@ -12,7 +12,7 @@
 #include <cstring>
 #include <algorithm>
 #include <sys/socket.h>
-#include "server_tcp.cpp"
+#include "server_tcp.h"
 
 // global variables
 std::vector<PeerReplicationInfo> g_replication_peers;
