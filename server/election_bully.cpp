@@ -9,6 +9,7 @@
 #include <sys/select.h>
 #include <cstring>
 #include <iostream>
+#include <random>
 
 namespace {
 
@@ -19,6 +20,35 @@ static uint32_t     g_my_pid;             // my numeric priority
 static std::string  g_my_ip;              // dotted quad
 static std::vector<std::string> g_peers;  // runtime list of backup servers
 static int          g_sock;               // UDP socket
+
+// Helper to extract the last octet from an IP address string.
+uint8_t get_last_ip_octet(const std::string& ip)
+{
+    // Find last number of the ip and convert it
+    size_t last_dot = ip.find_last_of('.');
+    if (last_dot != std::string::npos) 
+    {
+        const std::string octet_str = ip.substr(last_dot + 1);
+        char* end;
+        long octet = std::strtol(octet_str.c_str(), &end, 10);
+
+        // Check if conversion was successful, the entire string was consumed, and the value is in range
+        if (end != octet_str.c_str() && *end == '\0' && octet >= 0 && octet <= 255) 
+        {
+            return static_cast<uint8_t>(octet);
+        }
+    }
+
+    // If the IP format is invalid, parsing fails, or the octet is out of range, generate a random number
+    std::cerr << "[ELECT] Warning: Invalid or out-of-range octet in IP '" << ip
+              << "'. Using a random number as a tie-breaker.\n";
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> distrib(0, 255);
+
+    return static_cast<uint8_t>(distrib(gen));
+}
 
 // Helper function to send a packet to a specific IP address
 void send_election_packet(const std::string& ip, uint8_t type, uint32_t pid_payload)
@@ -164,8 +194,13 @@ void do_election()
 // Initializes the Bully election module with the server's identity and network configuration
 void bully_init(const std::string& my_ip)
 {
-    // Set this server's pid on a global variable to be used in the election
-    g_my_pid = static_cast<uint32_t>(::getpid());
+    // Get the process ID as the base for our priority.
+    uint32_t base_pid = static_cast<uint32_t>(::getpid());
+    // Get the last number of the IP address to use as a tie-breaker
+    uint8_t last_octet = get_last_ip_octet(my_ip);
+
+    // Combine the base PID and the last IP octet to create a unique id
+    g_my_pid = base_pid + last_octet;
     // Store this server's own IP address, passed from the command line
     g_my_ip = my_ip;
 
@@ -176,6 +211,9 @@ void bully_init(const std::string& my_ip)
     this_server_address.sin_port=htons(ELECTION_PORT);
     this_server_address.sin_addr.s_addr = INADDR_ANY;
     bind(g_sock, reinterpret_cast<sockaddr*>(&this_server_address), sizeof(this_server_address));
+
+    std::cout << "[ELECT] Initialized with priority PID=" << g_my_pid
+              << " (base_pid=" << base_pid << ", ip_octet=" << static_cast<int>(last_octet) << ")\n";
 
     // Start the listener function in a new, detached thread
     std::thread(listener).detach();
