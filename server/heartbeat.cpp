@@ -272,11 +272,28 @@ void start_primary_heartbeat_ping()
 
 void start_backup_heartbeat_listener(const std::string& primary_ip)
 {
-    // Tries to connect to the primary server with the given ip
-    int s = backup_heartbeat_connect(primary_ip);
+    constexpr int MAX_RETRIES = 5;
+    constexpr int RETRY_DELAY_S = 4;
+    int s = -1;
+
+    // The primary might have just been elected and needs a moment to set up its listener.
+    // We'll retry connecting a few times before giving up.
+    for (int i = 0; i < MAX_RETRIES; ++i) {
+        s = backup_heartbeat_connect(primary_ip);
+        if (s >= 0) 
+        {
+            break; // Success!
+        }
+
+        std::cerr << "[HB] Failed to connect to new primary. Retrying in " 
+                  << RETRY_DELAY_S << "s... (" << i + 1 << "/" << MAX_RETRIES << ")\n";
+        std::this_thread::sleep_for(std::chrono::seconds(RETRY_DELAY_S));
+    }
+
     if (s < 0) 
     { 
-        std::cerr << "Cannot start heartbeat listener\n"; 
+        std::cerr << "[HB] Cannot start heartbeat listener after " << MAX_RETRIES << " retries. Assuming primary is down.\n";
+        bully_start(); // The announced primary is unreachable, so start a new election.
         return; 
     }
 
