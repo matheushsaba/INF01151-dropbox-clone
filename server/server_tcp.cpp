@@ -520,21 +520,19 @@ void run_as_primary() {
     // It should never return
 }
 
-void promote_to_primary() {
+void promote_to_primary() 
+{
     ServerRole expected = ROLE_BACKUP;
     if (!g_role.compare_exchange_strong(expected, ROLE_PRIMARY))
     {
-        return;                                    // we were already primary
+        return; // we were already primary
     }
 
     std::cout << "\n[PROMOTE] Backup became PRIMARY – switching services\n";
 
-    // TODO: stop / join heartbeat-listener & replication-in threads
-    // TODO: any other cleanup specific to backup mode
-
-    /* start the primary services in *this* thread – they block forever */
-    run_as_primary();
-    std::exit(0);          // if those functions ever return, just terminate
+    // The main thread in run_as_backup() will detect this role change
+    // and transition to run_as_primary(). This function, called from
+    // the election thread, should now simply return and terminate.
 }
 
 void run_as_backup(const std::string& primary_ip) {
@@ -544,21 +542,15 @@ void run_as_backup(const std::string& primary_ip) {
     
     // TODO: Listen for replication data
 
-    // This loop keeps the process alive while we are a backup.
+    // Stay alive until elected as new primary in a leader election
     while (g_role.load() == ROLE_BACKUP)
     {
         std::this_thread::sleep_for(std::chrono::seconds(3));
     }
-
-    // TODO: Stop listening for replication data
-
-    // If we reach here, we have been promoted. The main work is now being
-    // done by the primary's threads, started by the election.
-    // The only task of the main thread now is to keep the process alive, sleeping forever.
-    std::cout << "[INFO] Main thread entering wait state as primary.\n";
-    while (true) {
-        std::this_thread::sleep_for(std::chrono::seconds(3600)); // Sleeps for 1 hour
-    }
+    // TODO: should stop listening for replicator data here
+    // If the while loop exits, it means we have been promoted.
+    // The main thread now takes on the primary role.
+    run_as_primary();
 }
 
 static void usage(const char* prog)
@@ -568,35 +560,44 @@ static void usage(const char* prog)
               << "  " << prog << " -b <primary_ip> --ip <self_ip>\n";
 }
 
-/* ------------------------------------------------------------------------- */
 int main(int argc, char* argv[])
 {
-    if (argc < 4) { usage(argv[0]); return 1; }
+    // Check for the minimum number of arguments.
+    // For primary: server -p --ip <self_ip> (4 args)
+    // For backup:  server -b <primary_ip> --ip <self_ip> (5 args, but -p needs 4)
+    if (argc < 4)
+    { 
+        usage(argv[0]); 
+        return 1; 
+    }
 
-    std::string   role_flag;         // "-p" or "-b"
-    std::string   primary_ip;        // only used in backup mode
-    std::string   self_ip;           // --ip value
+    std::string   role_flag;         // Stores the role flag ("-p" for primary, "-b" for backup).
+    std::string   primary_ip;        // Stores the IP address of the primary server (only used if this server is a backup).
+    std::string   self_ip;           // Stores the IP address of this server instance.
 
-    /* --- parse command-line ------------------------------------------------ */
+    // Loop through the command-line arguments.
     for (int i = 1; i < argc; ++i)
     {
         std::string arg = argv[i];
 
+        // Check if the argument is a role flag.
         if (arg == "-p" || arg == "-b")
         {
             role_flag = arg;
             if (arg == "-b")
             {
+                // Check if there's another argument after -b for the primary_ip.
                 if (++i >= argc) 
-                { 
+                {
                     usage(argv[0]); 
                     return 1; 
                 }
                 primary_ip = argv[i];
             }
         }
-        else if (arg == "--ip")
+        else if (arg == "--ip") // Check if the argument is the --ip flag.
         {
+            // Check if there's another argument after --ip for the self_ip. 
             if (++i >= argc)
             { 
                 usage(argv[0]); 
@@ -606,37 +607,40 @@ int main(int argc, char* argv[])
         }
         else    // unknown token
         {
+            // If an unrecognized argument is found, print usage and exit.
             usage(argv[0]); 
             return 1;
         }
     }
 
+    // Ensure that the --ip argument was provided.
     if (self_ip.empty()) 
     { 
         std::cerr << "--ip is required\n"; 
         return 1; 
     }
-    my_ip = self_ip;                     // make globally visible
+    my_ip = self_ip;                     // Store self_ip in the global variable for use in other parts of the server.
 
-    /* --- initialise Bully listener once ----------------------------------- */
+    // Initialize the Bully election algorithm listener with this server's IP.
     bully_init(my_ip);
 
-    /* --- choose role ------------------------------------------------------- */
+    // Determine the server's role based on the parsed role_flag.
     if (role_flag == "-p")
     {
-        g_role = ROLE_PRIMARY;
+        g_role.store(ROLE_PRIMARY); // Set the global role to primary
         std::cout << "Starting as PRIMARY on " << my_ip << '\n';
-        run_as_primary();                        // blocks forever
+        run_as_primary(); // Blocks indefinitely
     }
     else if (role_flag == "-b")
     {
-        g_role = ROLE_BACKUP;
         std::cout << "Starting as BACKUP on " << my_ip
                   << "  (primary = " << primary_ip << ")\n";
-        run_as_backup(primary_ip);               // blocks until promoted
+        g_role.store(ROLE_BACKUP);  // Set the global role to backup
+        run_as_backup(primary_ip);  // Blocks until this server is promoted
     }
     else
     {
+        // If no valid role flag (-p or -b) was provided, print usage and exit.
         std::cerr << "Missing -p or -b flag\n";
         usage(argv[0]);
         return 1;

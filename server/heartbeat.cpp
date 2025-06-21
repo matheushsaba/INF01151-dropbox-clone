@@ -14,7 +14,7 @@
 #include "election_bully.h"
 #include <algorithm>
 
-constexpr int HB_PORT        = 5001;      // single well-known port
+constexpr int HEARTBEAT_PORT        = 5001;      // single well-known port
 constexpr int HB_INTERVAL_MS = 250;       // send every 250 ms
 constexpr int HB_TIMEOUT_MS  = 1500;      // 1.5 s → primary presumed dead
 
@@ -26,23 +26,34 @@ static std::vector<std::string> peer_ips;   // backups we know
 
 void hb_broadcast_peerlist()
 {
+    // Create an empty string that will store the comma-separated list of peer IP addresses
     std::string csv;
-    for (auto& ip : peer_ips) {
+    // Format the csv
+    for (auto& ip : peer_ips) 
+    {
         if (!csv.empty()) csv += ',';
         csv += ip;
     }
 
-    Packet pl{}; pl.type = PACKET_TYPE_PEERLIST;
-    pl.length = csv.size();
+    Packet pl{}; 
+    pl.type = PACKET_TYPE_PEERLIST;
+    pl.length = std::min((int)csv.size(), MAX_PAYLOAD_SIZE); // Ensure payload fits within MAX_PAYLOAD_SIZE
     memcpy(pl.payload, csv.data(), pl.length);
 
+    // Acquire a lock on the heartbeat mutex to avoid race conditions on hb_clients vector
     std::lock_guard<std::mutex> lk(hb_mtx);
-    for (int fd : hb_clients) send_packet(fd, pl);
+    // Sends packets with the peer list to all backup servers
+    for (int fd : hb_clients) 
+    {
+        send_packet(fd, pl);
+    }
 }
 
+// Creates a socket for accepting connections from backup servers
 void primary_heartbeat_accept_loop()
 {
-    // Opens a socket with the default ip to receive heartbeats
+    // Opens a TCP socket where the primary will accept connections
+    // and send heartbeats to the backups
     int s = socket(AF_INET, SOCK_STREAM, 0);
     if (s < 0) 
     { 
@@ -52,54 +63,72 @@ void primary_heartbeat_accept_loop()
 
     sockaddr_in sa{};  
     sa.sin_family = AF_INET;
+    // INADDR_ANY binds the socket to 0.0.0.0, which is a wildcard to 
+    // accept connections on any IP address
     sa.sin_addr.s_addr = INADDR_ANY;
-    sa.sin_port = htons(HB_PORT);
+    sa.sin_port = htons(HEARTBEAT_PORT);
 
+    // Set a socket option to allow reusing the address
     int on = 1;  
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+
+    // Binds the socket to the specified address and port, and then start listening for connections.
     if (bind(s, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) < 0 || listen(s, 8) < 0) 
     {
         perror("heartbeat bind/listen");
         std::exit(2);
     }
-    std::cout << "[HB] listening on :" << HB_PORT << '\n';
+    
+    std::cout << "[HB] listening on :" << HEARTBEAT_PORT << '\n';
 
     // Starts a loop that accepts backup servers that will listen to the heartbeat
-    while (true) {
+    while (true) 
+    {
         sockaddr_in addr{};
         socklen_t   alen = sizeof(addr);
+
+        // Accepts a backup server who wants to listen to the heartbeat
         int cli = accept(s, reinterpret_cast<sockaddr*>(&addr), &alen);
-        if (cli < 0) { 
+        if (cli < 0) 
+        { 
             perror("accept"); 
             continue; 
         }
         
+        // Get the IP address of the connected backup server
+        // The address contains the real ip of the backu´p server connecting to this one
         char ipbuf[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &addr.sin_addr, ipbuf, sizeof ipbuf);
         std::string ip(ipbuf);
 
+        // Flag to determine if the list of peers needs to be sent to all backup servers
         bool should_broadcast = false;
         
+        // Critical section: Access shared data (hb_clients, peer_ips) in a thread-safe manner
         {
             std::lock_guard<std::mutex> lk(hb_mtx);
             hb_clients.push_back(cli);
 
             // Check if the peer is new to the list
-            if (std::find(peer_ips.begin(), peer_ips.end(), ip) == peer_ips.end()) {
+            if (std::find(peer_ips.begin(), peer_ips.end(), ip) == peer_ips.end()) 
+            {
                 peer_ips.push_back(ip);
                 should_broadcast = true; // Set a flag to broadcast after releasing the lock
             }
-        } // The lock on hb_mtx is released here as lk goes out of scope
+        } // The lock is released here
 
         std::cout << "[HB] backup joined " << ip << " (fd=" << cli << ")\n";
 
         // Call the broadcast function outside the lock to prevent deadlock
-        if (should_broadcast) {
+        // This will send the updated peerlist to all backups
+        if (should_broadcast) 
+        {
             hb_broadcast_peerlist();
         }
     }
 }
 
+// Sends heartbeats to state that the primary server is still alive
 void primary_heartbeat_ping_loop()
 {
     Packet hb{}; 
@@ -107,9 +136,12 @@ void primary_heartbeat_ping_loop()
     hb.length = 0;
 
     // Sends the ping in a interval of time to state that the primary server is alive
-    while (true) {
+    while (true) 
+    {
         std::this_thread::sleep_for(std::chrono::milliseconds(HB_INTERVAL_MS));
 
+        // hb_clients is a shared resource and needs to be protected through a lock
+        // otherwise it may be accessed at the same time through hb_broadcast_peerlist 
         std::lock_guard<std::mutex> lk(hb_mtx);
         for (auto it = hb_clients.begin(); it != hb_clients.end(); ) 
         {
@@ -124,49 +156,56 @@ void primary_heartbeat_ping_loop()
     }
 }
 
-int backup_heartbeat_connect(const std::string& ip)
+// Connects to the primary server socket that sends heartbeats
+int backup_heartbeat_connect(const std::string& primary_server_ip)
 {
-    // Creates a socket to connect to the primary server
+    // Creates a TCP socket to connect to the primary server
     int s = socket(AF_INET, SOCK_STREAM, 0);
     if (s < 0) 
     { 
         perror("socket"); return -1; 
     }
 
-    // Connects to the server with the given ip
-    sockaddr_in sa{}; 
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(HB_PORT);
-    if (inet_pton(AF_INET, ip.c_str(), &sa.sin_addr) != 1) 
+    sockaddr_in server_address{}; 
+    server_address.sin_family = AF_INET;
+    server_address.sin_port = htons(HEARTBEAT_PORT);
+    // Attemps to convert the given ip to binary network format
+    if (inet_pton(AF_INET, primary_server_ip.c_str(), &server_address.sin_addr) != 1) 
     {
-        std::cerr << "Invalid IP " << ip << '\n'; return -1;
+        std::cerr << "Invalid IP " << primary_server_ip << '\n'; 
+        return -1;
     }
-
-    if (connect(s, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) < 0) 
+    
+    // Connects to the primary server with the given ip
+    if (connect(s, reinterpret_cast<sockaddr*>(&server_address), sizeof(server_address)) < 0) 
     {
         perror("connect"); 
         return -1;
     }
 
-    std::cout << "[HB] connected to primary " << ip << ":" << HB_PORT << '\n';
+    std::cout << "[HB] connected to primary " << primary_server_ip << ":" << HEARTBEAT_PORT << '\n';
 
     return s;
 }
 
+// 
 void backup_heartbeat_watch_loop(int sock)
 {
     using clk = std::chrono::steady_clock;
-    auto last = clk::now(); // Remember the last time a ping was seen.
+    auto last = clk::now(); // Record the time when the last heartbeat was received
 
+    // Start an infinite loop to monitor the primary server heartbeat
     while (true) 
     {
-        fd_set rd{}; 
-        FD_ZERO(&rd); 
-        FD_SET(sock, &rd);
-        timeval tv{}; 
-        tv.tv_sec  = 0;
-        tv.tv_usec = 200 * 1000; // 200 ms
+        fd_set rd{}; // Initialize a file descriptor set for the select() call
+        FD_ZERO(&rd); // Clear the set
+        FD_SET(sock, &rd); // Add the heartbeat socket to the set to monitor for readability
+        timeval tv{}; // Initialize a timeval structure for the select() timeout
+        tv.tv_sec  = 0; // timeout == 0 s
+        tv.tv_usec = 200 * 1000; // timeout == 200 ms
 
+        // Wait for activity on the socket or until the timeout expires
+        // rv > 0 means data is available, rv = 0 means timeout, rv < 0 means error
         int rv = select(sock+1, &rd, nullptr, nullptr, &tv);
         if (rv > 0 && FD_ISSET(sock, &rd)) 
         {
@@ -175,7 +214,6 @@ void backup_heartbeat_watch_loop(int sock)
             if (!recv_packet(sock, pkt)) 
             {
                 std::cerr << "[HB] LOST - Primary TCP connection closed. Presumed down.\n";
-                std::cerr << "[HB] LOST - Starting election\n";
                 bully_start();
                 return; // Exit the function and the thread.
             }
@@ -183,31 +221,40 @@ void backup_heartbeat_watch_loop(int sock)
             // Check if it's a heartbeat
             if (pkt.type == PACKET_TYPE_HB) 
             {
-                // Reset the timeout timer
+                // Reset the last seen timestamp
                 last = clk::now();
             }
 
             if (pkt.type == PACKET_TYPE_PEERLIST) 
             {
+                // Convert the csv to a string
                 std::string csv(pkt.payload, pkt.length);
                 std::vector<std::string> lst;
                 size_t pos;
-                while ((pos = csv.find(',')) != std::string::npos) {
+                // Loop through the csv, splitting it on the commas
+                while ((pos = csv.find(',')) != std::string::npos) 
+                {
                     lst.push_back(csv.substr(0,pos));
                     csv.erase(0,pos+1);
                 }
-                if (!csv.empty()) lst.push_back(csv);
-                bully_set_peer_list(lst);            // hand to election module
-                continue;                            // not a heartbeat — skip timer update
+                // Add the last IP address in the CSV string
+                if (!csv.empty()) 
+                {
+                    lst.push_back(csv);
+                }
+                // Update the election module with the new list of peers
+                bully_set_peer_list(lst);
+
+                // Skip updating 'last' for peerlist packets, as they aren't heartbeats
+                continue;
             }
         }
 
-        // This check handles the case where the primary is still connected but has become unresponsive (not sending pings)
+        // Calculate the time elapsed since the last heartbeat was received
         auto age = std::chrono::duration_cast<std::chrono::milliseconds>(clk::now() - last).count();
         if (age > HB_TIMEOUT_MS) 
         {
             std::cerr << "[HB] LOST - Primary unresponsive\n";
-            std::cerr << "[HB] LOST - Starting election\n";
             bully_start();
             return;
         }
@@ -225,11 +272,28 @@ void start_primary_heartbeat_ping()
 
 void start_backup_heartbeat_listener(const std::string& primary_ip)
 {
-    // Tries to connect to the primary server with the given ip
-    int s = backup_heartbeat_connect(primary_ip);
+    constexpr int MAX_RETRIES = 5;
+    constexpr int RETRY_DELAY_S = 4;
+    int s = -1;
+
+    // The primary might have just been elected and needs a moment to set up its listener.
+    // We'll retry connecting a few times before giving up.
+    for (int i = 0; i < MAX_RETRIES; ++i) {
+        s = backup_heartbeat_connect(primary_ip);
+        if (s >= 0) 
+        {
+            break; // Success!
+        }
+
+        std::cerr << "[HB] Failed to connect to new primary. Retrying in " 
+                  << RETRY_DELAY_S << "s... (" << i + 1 << "/" << MAX_RETRIES << ")\n";
+        std::this_thread::sleep_for(std::chrono::seconds(RETRY_DELAY_S));
+    }
+
     if (s < 0) 
     { 
-        std::cerr << "Cannot start heartbeat listener\n"; 
+        std::cerr << "[HB] Cannot start heartbeat listener after " << MAX_RETRIES << " retries. Assuming primary is down.\n";
+        bully_start(); // The announced primary is unreachable, so start a new election.
         return; 
     }
 
