@@ -510,21 +510,19 @@ void run_as_primary() {
     // It should never return
 }
 
-void promote_to_primary() {
+void promote_to_primary() 
+{
     ServerRole expected = ROLE_BACKUP;
     if (!g_role.compare_exchange_strong(expected, ROLE_PRIMARY))
     {
-        return;                                    // we were already primary
+        return; // we were already primary
     }
 
     std::cout << "\n[PROMOTE] Backup became PRIMARY – switching services\n";
 
-    // TODO: stop / join heartbeat-listener & replication-in threads
-    // TODO: any other cleanup specific to backup mode
-
-    /* start the primary services in *this* thread – they block forever */
-    run_as_primary();
-    std::exit(0);          // if those functions ever return, just terminate
+    // The main thread in run_as_backup() will detect this role change
+    // and transition to run_as_primary(). This function, called from
+    // the election thread, should now simply return and terminate.
 }
 
 void run_as_backup(const std::string& primary_ip) {
@@ -532,15 +530,15 @@ void run_as_backup(const std::string& primary_ip) {
     // listening for its heartbeats
     start_backup_heartbeat_listener(primary_ip);
 
-    // TODO: Listen for replication data (listen_for_replication_data)
-
     // Stay alive until elected as new primary in a leader election
     while (g_role.load() == ROLE_BACKUP)
     {
         std::this_thread::sleep_for(std::chrono::seconds(3));
     }
 
-    // It should never return
+    // If the while loop exits, it means we have been promoted.
+    // The main thread now takes on the primary role.
+    run_as_primary();
 }
 
 static void usage(const char* prog)
@@ -612,22 +610,21 @@ int main(int argc, char* argv[])
     my_ip = self_ip;                     // Store self_ip in the global variable for use in other parts of the server.
 
     // Initialize the Bully election algorithm listener with this server's IP.
-    // TODO: Reactivate the bully algorithm
-    // bully_init(my_ip);
+    bully_init(my_ip);
 
     // Determine the server's role based on the parsed role_flag.
     if (role_flag == "-p")
     {
-        g_role.store(ROLE_PRIMARY); // Set the global role to PRIMARY.
+        g_role.store(ROLE_PRIMARY); // Set the global role to primary
         std::cout << "Starting as PRIMARY on " << my_ip << '\n';
-        run_as_primary();                        // Start primary server functionalities; this function blocks indefinitely.
+        run_as_primary(); // Blocks indefinitely
     }
     else if (role_flag == "-b")
     {
-        g_role.store(ROLE_BACKUP);  // Set the global role to BACKUP.
         std::cout << "Starting as BACKUP on " << my_ip
                   << "  (primary = " << primary_ip << ")\n";
-        run_as_backup(primary_ip);               // blocks until promoted
+        g_role.store(ROLE_BACKUP);  // Set the global role to backup
+        run_as_backup(primary_ip);  // Blocks until this server is promoted
     }
     else
     {

@@ -37,7 +37,7 @@ void hb_broadcast_peerlist()
 
     Packet pl{}; 
     pl.type = PACKET_TYPE_PEERLIST;
-    pl.length = csv.size();
+    pl.length = std::min((int)csv.size(), MAX_PAYLOAD_SIZE); // Ensure payload fits within MAX_PAYLOAD_SIZE
     memcpy(pl.payload, csv.data(), pl.length);
 
     // Acquire a lock on the heartbeat mutex to avoid race conditions on hb_clients vector
@@ -78,6 +78,7 @@ void primary_heartbeat_accept_loop()
         perror("heartbeat bind/listen");
         std::exit(2);
     }
+    
     std::cout << "[HB] listening on :" << HEARTBEAT_PORT << '\n';
 
     // Starts a loop that accepts backup servers that will listen to the heartbeat
@@ -213,10 +214,7 @@ void backup_heartbeat_watch_loop(int sock)
             if (!recv_packet(sock, pkt)) 
             {
                 std::cerr << "[HB] LOST - Primary TCP connection closed. Presumed down.\n";
-                std::cerr << "[HB] LOST - Starting election\n";
-                // TODO: start a new leader election
-                promote_to_primary();
-                // bully_start();
+                bully_start();
                 return; // Exit the function and the thread.
             }
 
@@ -257,8 +255,7 @@ void backup_heartbeat_watch_loop(int sock)
         if (age > HB_TIMEOUT_MS) 
         {
             std::cerr << "[HB] LOST - Primary unresponsive\n";
-            std::cerr << "[HB] LOST - Starting election\n";
-            // bully_start();
+            bully_start();
             return;
         }
     }
@@ -275,11 +272,28 @@ void start_primary_heartbeat_ping()
 
 void start_backup_heartbeat_listener(const std::string& primary_ip)
 {
-    // Tries to connect to the primary server with the given ip
-    int s = backup_heartbeat_connect(primary_ip);
+    constexpr int MAX_RETRIES = 5;
+    constexpr int RETRY_DELAY_S = 4;
+    int s = -1;
+
+    // The primary might have just been elected and needs a moment to set up its listener.
+    // We'll retry connecting a few times before giving up.
+    for (int i = 0; i < MAX_RETRIES; ++i) {
+        s = backup_heartbeat_connect(primary_ip);
+        if (s >= 0) 
+        {
+            break; // Success!
+        }
+
+        std::cerr << "[HB] Failed to connect to new primary. Retrying in " 
+                  << RETRY_DELAY_S << "s... (" << i + 1 << "/" << MAX_RETRIES << ")\n";
+        std::this_thread::sleep_for(std::chrono::seconds(RETRY_DELAY_S));
+    }
+
     if (s < 0) 
     { 
-        std::cerr << "Cannot start heartbeat listener\n"; 
+        std::cerr << "[HB] Cannot start heartbeat listener after " << MAX_RETRIES << " retries. Assuming primary is down.\n";
+        bully_start(); // The announced primary is unreachable, so start a new election.
         return; 
     }
 
