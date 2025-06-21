@@ -612,8 +612,7 @@ int main(int argc, char* argv[])
     my_ip = self_ip;                     // Store self_ip in the global variable for use in other parts of the server.
 
     // Initialize the Bully election algorithm listener with this server's IP.
-    // TODO: Reactivate the bully algorithm
-    // bully_init(my_ip);
+    bully_init(my_ip);
 
     // Determine the server's role based on the parsed role_flag.
     if (role_flag == "-p")
