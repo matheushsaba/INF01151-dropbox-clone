@@ -17,6 +17,7 @@ namespace {
 
 constexpr int ELECTION_PORT = 5002;      // UDP port for election messages
 constexpr int OK_WAIT_MS    = 1000;      // wait for OK from better candidate
+constexpr int COORD_WAIT_MS = 2000;      // wait for coordinator announcement
 
 static std::mutex               g_election_mutex;
 static std::condition_variable  g_election_cv;
@@ -117,13 +118,14 @@ void handle_election_connection(int sock, sockaddr_in addr)
     } else if (pkt.type == PACKET_TYPE_OK) {
         std::lock_guard<std::mutex> lock(g_election_mutex);
         g_received_ok = true;
-        g_election_cv.notify_one();
+        g_election_cv.notify_all();
     } else if (pkt.type == PACKET_TYPE_COORD) {
         std::cout << "[ELECT] New coordinator: PID " << sender_pid << " (" << ipbuf << ")\n";
         {
             std::lock_guard<std::mutex> lock(g_election_mutex);
             g_election_in_progress = false;
             g_received_ok = false;
+            g_election_cv.notify_all();
         }
         start_backup_heartbeat_listener(ipbuf);
     }
@@ -159,12 +161,24 @@ void do_election()
     g_received_ok = false; // Reset for this election attempt.
 
     // Wait for an OK from a higher-PID peer. `wait_for` returns true if notified, false on timeout.
-    if (g_election_cv.wait_for(lock, std::chrono::milliseconds(OK_WAIT_MS), []{ return g_received_ok; }))
-    {
-        // We were woken up because g_received_ok became true. We lost the election.
-        std::cout << "[ELECT] Received OK, backing down.\n";
-        g_election_in_progress = false; // Allow a new election to start.
-        return; // End this election thread.
+    if (g_election_cv.wait_for(lock, std::chrono::milliseconds(OK_WAIT_MS), []{ return g_received_ok; })) {
+        // Received OK, so we lost the candidate role. Now we must wait for the winner to announce themselves.
+        std::cout << "[ELECT] Received OK, backing down. Waiting for new coordinator.\n";
+
+        // Wait for a COORD message, which will set g_election_in_progress to false.
+        // The COORD handler will notify us. If it doesn't happen, we time out.
+        if (g_election_cv.wait_for(lock, std::chrono::milliseconds(COORD_WAIT_MS), []{ return !g_election_in_progress; })) {
+            std::cout << "[ELECT] New coordinator was announced. Election thread finished.\n";
+            // The listener thread has already started the heartbeat to the new leader. We can just exit.
+        } else {
+            // We timed out waiting for a coordinator. The process that sent OK may have crashed.
+            std::cout << "[ELECT] Timed out waiting for coordinator. Starting a new election.\n";
+            g_election_in_progress = false; // Reset the flag to allow a new election.
+            // We must unlock before calling bully_start to avoid deadlock, as it also locks the mutex.
+            lock.unlock();
+            bully_start();
+        }
+        return; // This election thread's work is done, one way or another.
     }
 
     // Timed out. Before declaring victory, we MUST re-check if a COORD message
