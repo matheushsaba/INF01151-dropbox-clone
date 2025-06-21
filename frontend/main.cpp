@@ -36,6 +36,7 @@ Address g_current_primary_address;
 std::mutex g_primary_address_mutex;
 std::map<std::string, std::shared_ptr<ClientSession>> g_active_sessions;
 std::mutex g_sessions_mutex;
+std::string g_frontend_ip;
 
 // --- Function Prototypes ---
 void session_handshake_thread(int client_handshake_sock);
@@ -47,13 +48,15 @@ int get_socket_port(int sockfd);
 bool recover_session_handshake(std::shared_ptr<ClientSession> session);
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <initial_primary_ip> <initial_primary_port>\n";
-        std::cerr << "Example: " << argv[0] << " 127.0.0.1 4000\n";
+    if (argc < 4) {
+        std::cerr << "Usage: " << argv[0] << " <frontend_ip> <initial_primary_ip> <initial_primary_port>\n";
+        std::cerr << "Example: " << argv[0] << " 127.0.0.1 127.0.0.1 4000\n";
         return 1;
     }
 
-    g_current_primary_address = {argv[1], std::stoi(argv[2])};
+    g_frontend_ip = argv[1];
+    g_current_primary_address = {argv[2], std::stoi(argv[3])};
+    std::cout << "[FE] Frontend IP set to " << g_frontend_ip << std::endl;
     std::cout << "[FE] Initial primary configured to " << g_current_primary_address.ip << ":" << g_current_primary_address.port << std::endl;
 
     int notification_port = 9090;
@@ -63,7 +66,7 @@ int main(int argc, char* argv[]) {
     int client_listener_sock = create_listening_socket(client_listen_port);
     if (client_listener_sock < 0) exit(1);
 
-    std::cout << "[FE] Listening for clients on port " << client_listen_port << std::endl;
+    std::cout << "[FE] Listening for clients on " << g_frontend_ip << ":" << client_listen_port << std::endl;
 
     while (true) {
         int client_sock = accept(client_listener_sock, nullptr, nullptr);
@@ -274,7 +277,7 @@ int create_listening_socket(int port) {
     setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    inet_pton(AF_INET, g_frontend_ip.c_str(), &addr.sin_addr);
     addr.sin_port = htons(port);
     if (bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { perror("[FE Helper] bind"); close(sockfd); return -1; }
     if (listen(sockfd, 20) < 0) { perror("[FE Helper] listen"); close(sockfd); return -1; }
