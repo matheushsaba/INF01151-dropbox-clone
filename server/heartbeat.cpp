@@ -78,6 +78,7 @@ void primary_heartbeat_accept_loop()
         perror("heartbeat bind/listen");
         std::exit(2);
     }
+    
     std::cout << "[HB] listening on :" << HEARTBEAT_PORT << '\n';
 
     // Starts a loop that accepts backup servers that will listen to the heartbeat
@@ -213,7 +214,6 @@ void backup_heartbeat_watch_loop(int sock)
             if (!recv_packet(sock, pkt)) 
             {
                 std::cerr << "[HB] LOST - Primary TCP connection closed. Presumed down.\n";
-                std::cerr << "[HB] LOST - Starting election\n";
                 bully_start();
                 return; // Exit the function and the thread.
             }
@@ -255,7 +255,6 @@ void backup_heartbeat_watch_loop(int sock)
         if (age > HB_TIMEOUT_MS) 
         {
             std::cerr << "[HB] LOST - Primary unresponsive\n";
-            std::cerr << "[HB] LOST - Starting election\n";
             bully_start();
             return;
         }

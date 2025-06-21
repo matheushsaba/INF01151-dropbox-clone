@@ -15,9 +15,9 @@
 
 namespace {
 
-constexpr int ELECTION_PORT = 5002;      // UDP port for election messages
-constexpr int OK_WAIT_MS    = 1000;      // wait for OK from better candidate
-constexpr int COORD_WAIT_MS = 2000;      // wait for coordinator announcement
+constexpr int ELECTION_PORT = 5002;      // Port for election messages
+constexpr int OK_WAIT_MS    = 1000;      // Timeout for OK from better candidate
+constexpr int COORD_WAIT_MS = 2000;      // Timeout for coordinator announcement
 
 static std::mutex               g_election_mutex;
 static std::condition_variable  g_election_cv;
@@ -92,41 +92,75 @@ void send_election_packet(const std::string& ip, uint8_t type, uint32_t pid_payl
     close(sock);
 }
 
+// Receives election messages from the other server and deals with them
 void handle_election_connection(int sock, sockaddr_in addr)
 {
+    // Create a packet ot receive election messages
     Packet pkt;
-    if (!recv_packet(sock, pkt)) {
+    if (!recv_packet(sock, pkt)) 
+    {
         close(sock);
         return;
     }
-    close(sock); // We're done with this connection.
+    // Close the socket immediately since the connection is no longer needed
+    close(sock);
 
+    // Get the send's ip address
     char ipbuf[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &addr.sin_addr, ipbuf, sizeof ipbuf);
 
+    // Get the sender's pid
     uint32_t sender_pid;
-    if (pkt.length < sizeof(sender_pid)) {
-        return; // Malformed packet
+    if (pkt.length < sizeof(sender_pid)) 
+    {
+        // Malformed packet
+        return;
     }
     std::memcpy(&sender_pid, pkt.payload, sizeof(sender_pid));
 
-    if (pkt.type == PACKET_TYPE_ELECT) {
-        if (g_my_pid > sender_pid) {
+    if (pkt.type == PACKET_TYPE_ELECT) 
+    {
+        // If this is an ELECTION message, compare our PID with the sender's
+        if (g_my_pid > sender_pid) 
+        {
+            // If our PID is higher, send an OK message back to the sender
             send_election_packet(ipbuf, PACKET_TYPE_OK, g_my_pid);
+
+            // Start our own election process because we have a higher priority
             bully_start();
         }
-    } else if (pkt.type == PACKET_TYPE_OK) {
+    } 
+    else if (pkt.type == PACKET_TYPE_OK) 
+    {
+        // If this is an OK message, it means a higher-priority server is running for election
+        // Acquire a lock to safely modify shared election state variables
         std::lock_guard<std::mutex> lock(g_election_mutex);
+
+        // Set the flag indicating we have received an OK and should back down
         g_received_ok = true;
+
+        // Notify any waiting threads (like do_election) that the state has changed
         g_election_cv.notify_all();
-    } else if (pkt.type == PACKET_TYPE_COORD) {
+    } 
+    else if (pkt.type == PACKET_TYPE_COORD) 
+    {
+        // If this is a COORDINATOR message, a new leader has been elected
         std::cout << "[ELECT] New coordinator: PID " << sender_pid << " (" << ipbuf << ")\n";
         {
+            // Acquire a lock to safely reset the shared election state
             std::lock_guard<std::mutex> lock(g_election_mutex);
+
+            // Mark that the election is no longer in progress
             g_election_in_progress = false;
+
+            // Reset the 'received_ok' flag for the next election
             g_received_ok = false;
+
+            // Notify any waiting threads that the election has concluded
             g_election_cv.notify_all();
         }
+
+        // As a backup, start listening for heartbeats from the new primary server
         start_backup_heartbeat_listener(ipbuf);
     }
 }
@@ -138,8 +172,7 @@ void do_election()
 
     std::vector<std::string> current_peers;
     {
-        // Lock the mutex to safely copy the shared g_peers vector. This prevents
-        // data races if the list is being updated by another thread.
+        // Lock the mutex to safely copy the shared g_peers vector
         std::lock_guard<std::mutex> lock(g_election_mutex);
         current_peers = g_peers;
     }
@@ -183,7 +216,8 @@ void do_election()
 
     // Timed out. Before declaring victory, we MUST re-check if a COORD message
     // arrived and cancelled the election while we were waiting. This fixes the race condition.
-    if (!g_election_in_progress) {
+    if (!g_election_in_progress) 
+    {
         std::cout << "[ELECT] Coordinator announced during our election, backing down.\n";
         return; // A new leader was chosen by others while we were waiting.
     }
@@ -194,8 +228,10 @@ void do_election()
     std::cout << "[ELECT] Won election, broadcasting coordinator\n";
 
     // Iterate through all peers to announce our new leadership.
-    for (auto& ip : g_peers) {
-        if (ip != g_my_ip) {
+    for (auto& ip : g_peers) 
+    {
+        if (ip != g_my_ip) 
+        {
             send_election_packet(ip, PACKET_TYPE_COORD, g_my_pid);
         }
     }
@@ -212,7 +248,8 @@ void listener()
         sockaddr_in client_addr{};
         socklen_t len = sizeof(client_addr);
         int client_sock = accept(g_sock, reinterpret_cast<sockaddr*>(&client_addr), &len);
-        if (client_sock < 0) {
+        if (client_sock < 0) 
+        {
             perror("[ELECT] accept failed");
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
@@ -222,7 +259,7 @@ void listener()
     }
 }
 
-} // unnamed namespace
+}
 
 // This function is called only when the first server is initialized via command terminal on server_tcp
 // Initializes the Bully election module with the server's identity and network configuration
@@ -238,26 +275,33 @@ void bully_init(const std::string& my_ip)
     // Store this server's own IP address, passed from the command line
     g_my_ip = my_ip;
 
+    // Create a TCP socket
     g_sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (g_sock < 0) {
+    if (g_sock < 0) 
+    {
         perror("[ELECT] socket creation failed");
         std::exit(EXIT_FAILURE);
     }
 
+    // Make it reusable
     int on = 1;
     setsockopt(g_sock, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
 
+    // Bind it to this server address to listen for election messages
     sockaddr_in this_server_address{};
     this_server_address.sin_family = AF_INET;
     this_server_address.sin_port = htons(ELECTION_PORT);
     this_server_address.sin_addr.s_addr = INADDR_ANY;
-    if (bind(g_sock, reinterpret_cast<sockaddr*>(&this_server_address), sizeof(this_server_address)) < 0) {
+    if (bind(g_sock, reinterpret_cast<sockaddr*>(&this_server_address), sizeof(this_server_address)) < 0) 
+    {
         perror("[ELECT] bind failed");
         close(g_sock);
         std::exit(EXIT_FAILURE);
     }
 
-    if (listen(g_sock, 10) < 0) {
+    // Listen for incoming election messages
+    if (listen(g_sock, 10) < 0) 
+    {
         perror("[ELECT] listen failed");
         close(g_sock);
         std::exit(EXIT_FAILURE);
@@ -271,23 +315,32 @@ void bully_init(const std::string& my_ip)
     std::thread(listener).detach();
 }
 
-
-// This function is called inside the listener() function on this file
+// Called on the backup_heartbeat_watch_loop on heartbeat.cpp
 // Triggers a new leader election process to run in a background thread
 void bully_start()
 {
     std::lock_guard<std::mutex> lock(g_election_mutex);
-    if (g_election_in_progress) {
+    if (g_election_in_progress) 
+    {
         return; // An election is already in progress.
     }
+    std::cerr << "[ELECT] Starting election\n";
+
     g_election_in_progress = true;
     std::thread(do_election).detach();
 }
 
+// Called on the backup_heartbeat_watch_loop on heartbeat.cpp
 // Updates the internal list of peer IPs to run elections
 void bully_set_peer_list(const std::vector<std::string>& peers)
 {
     // Lock the mutex to ensure thread-safe updates to the shared peer list.
     std::lock_guard<std::mutex> lock(g_election_mutex);
     g_peers = peers;
+
+    std::cout << "[ELECT] Updated peer list: [";
+    for (size_t i = 0; i < g_peers.size(); ++i) {
+        std::cout << g_peers[i] << (i == g_peers.size() - 1 ? "" : ", ");
+    }
+    std::cout << "]\n";
 }
