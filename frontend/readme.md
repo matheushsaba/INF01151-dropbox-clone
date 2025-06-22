@@ -8,7 +8,7 @@
 ```./bin/server_exec -p --ip 127.0.0.1 --frontend-ip 127.0.0.4```
 
 ### - terminal 3 Iniciar o Servidor Backup:
-```./bin/server_exec -b 127.0.0.1 --ip 127.0.0.2```
+```./bin/server_exec -b 127.0.0.1 --ip 127.0.0.2 --frontend-ip 127.0.0.4```
 
 ### - terminal 4 Iniciar o cliente:
 ```./bin/myClient usuario_teste 127.0.0.4 8080```
