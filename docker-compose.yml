@@ -62,8 +62,7 @@ services:
       build: . # Build the image from the Dockerfile in the current directory
       container_name: client1
       # The command now uses a hardcoded IP address.
-      # command: ["./bin/myClient", "user_teste", "172.28.0.13", "8080"]
-      command: ["/bin/bash"]
+      command: ["./bin/myClient", "user_teste", "172.28.0.10", "4000"]
       environment:
         - SERVICE_NAME=client1
       networks:
@@ -79,10 +78,12 @@ services:
       build: . # Build the image from the Dockerfile in the current directory
       container_name: client2
       # The command now uses a hardcoded IP address.
-      command: ["./bin/myClient", "user_teste2", "172.28.0.13", "8080"]
+      command: ["/bin/bash"]
       environment:
         - SERVICE_NAME=client2
       networks:
         dropbox-net:
           # Assign a static IP to this container
           ipv4_address: 172.28.0.15  # Map port 4000 on the host to port 4000 on this container.
+      stdin_open: true
+      tty: true
