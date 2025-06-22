@@ -45,15 +45,15 @@ std::string get_sync_dir();
 
 // Method to create a socket and connect it to the specified port
 bool connect_to_port(int& socket_fd, int port) {
-    sockaddr_in serv_addr{};
-    hostent* server = gethostbyname(hostname.c_str());
+    sockaddr_in serv_addr{}; // Initializes a struct of type sockaddr_in that is going to be filled later. Slide 20 Aula-11
+    hostent* server = gethostbyname(hostname.c_str()); // Get server info based on hostname
 
-    if (!server) {
+    if (!server) { // Server returns false if it fails to be found
         std::cerr << "ERROR: No such host:" << hostname << std::endl;
         return false;
     }
-    // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
 
+    // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
     socket_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_fd < 0) {
         perror("ERROR opening socket");
@@ -66,6 +66,7 @@ bool connect_to_port(int& socket_fd, int port) {
     serv_addr.sin_addr = *reinterpret_cast<in_addr*>(server->h_addr); // Copies the ip addres from gethostbyname(). server->h_addr is a pointer
     memset(&(serv_addr.sin_zero), 0, 8);
 
+    // Connect the socket to the server. Slide 23 Aula-11
     if (connect(socket_fd, reinterpret_cast<sockaddr*>(&serv_addr), sizeof(serv_addr)) < 0) {
         perror("ERROR connecting");
         close(socket_fd);
@@ -416,8 +417,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     username = argv[1];
-    hostname = argv[2];
-    int port = std::stoi(argv[3]);
+    hostname = argv[2];             // IP of the FRONT-END
+    int port = std::stoi(argv[3]); // Port of the FRONT-END (e.g., 8080)
 
     // 1. Handshake connection
     int handshake_socket;
@@ -478,7 +479,7 @@ int main(int argc, char* argv[]) {
         print_menu();
         std::cout << username << "> ";
         std::flush(std::cout);
-        if (!std::getline(std::cin, input)) { // Lida com Ctrl+D
+        if (!std::getline(std::cin, input)) { 
             watcher_running = false;
             break;
         }
