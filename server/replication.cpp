@@ -106,7 +106,6 @@ void handle_backup_initial_sync_request(int backup_connected_socket) {
                 if (!files_to_send) {
                     std::cout << "[Primary Replication] No files found in server_storage to send for full sync.\n";
                 }
-                    std::this_thread::sleep_for(std::chrono::seconds(1));
 
                 // send ACK for FULL_SYNC_COMPLETE, even if no files were sent
                 Packet final_ack_pkt;
