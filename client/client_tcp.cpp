@@ -443,6 +443,9 @@ void watch_server_sync(int socket_fd)
 
 int main(int argc, char* argv[]) 
 {
+    // set cout to unbuffered mode: allow real-time logging/prevents out of order messages
+    std::cout << std::unitbuf;
+
     if (argc < 4) {
         std::cerr << "Usage: " << argv[0]
                   << " <username> <server_ip_address> <port>\n";

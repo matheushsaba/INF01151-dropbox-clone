@@ -509,19 +509,36 @@ void start_backup_replication_listener() {
 
 void request_full_sync_from_primary(const std::string& primary_ip) {
     std::cout << "[Backup] Requesting full sync from primary " << primary_ip << ":" << REPLICATION_PORT << '\n';
-    int s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s < 0) { 
-        perror("[Backup sync] socket creation failed");
-        return; 
-    }
+    int s = -1;
+    int max_retries = 10;
+    int current_retry = 0;
+    bool connected = false;
+    while (!connected && current_retry < max_retries) {
 
-    sockaddr_in sa{};
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(REPLICATION_PORT);
-    if (inet_pton(AF_INET, primary_ip.c_str(), &(sa.sin_addr)) != 1) {
-        std::cerr << "[Backup sync] Invalid IP address for primary " << primary_ip << '\n';
-        close(s);
-        return;
+        s = socket(AF_INET, SOCK_STREAM, 0);
+        if (s < 0) { 
+            perror("[Backup sync] socket creation failed");
+            return; 
+        }
+
+        sockaddr_in sa{};
+        sa.sin_family = AF_INET;
+        sa.sin_port = htons(REPLICATION_PORT);
+        if (inet_pton(AF_INET, primary_ip.c_str(), &(sa.sin_addr)) != 1) {
+            std::cerr << "[Backup sync] Invalid IP address for primary " << primary_ip << '\n';
+            close(s);
+            return;
+        }
+        if (connect(s, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) < 0) {
+            std::cerr << "[Backup sync] Failed to connect to primary " << primary_ip << ":" << REPLICATION_PORT << " (attempt " << (current_retry + 1) << "/" << max_retries << "). Retrying...\n";
+            close(s); // close failed socket
+            // exponential backoff: sleep for 1s, then 2s, 4s, etc., up to a max
+            std::this_thread::sleep_for(std::chrono::seconds(1 << std::min(current_retry, 4))); // Cap sleep at 16s (2^4)
+            current_retry++;
+        } else {
+            connected = true;
+            std::cout << "[Backup sync] Successfully connected to primary for full sync.\n";
+        }
     }
 
     // send full sync request command:

@@ -575,6 +575,10 @@ static void usage(const char* prog)
 
 int main(int argc, char* argv[])
 {
+
+    // set cout to unbuffered mode: allow real-time logging/prevents out of order messages
+    std::cout << std::unitbuf;
+
     // Check for the minimum number of arguments.
     // For primary: server -p --ip <self_ip> (4 args)
     // For backup:  server -b <primary_ip> --ip <self_ip> (5 args, but -p needs 4)
@@ -587,6 +591,16 @@ int main(int argc, char* argv[])
     std::string   role_flag;         // Stores the role flag ("-p" for primary, "-b" for backup).
     std::string   primary_ip;        // Stores the IP address of the primary server (only used if this server is a backup).
     std::string   self_ip;           // Stores the IP address of this server instance.
+
+    // for the replication to work:
+    // ensure 'server_storage' base directory exists before any operations
+    std::error_code ec;
+    std::filesystem::create_directories("server_storage", ec);
+    if (ec) {
+        std::cerr << "Error: Could not create server_storage directory: " << ec.message() << '\n';
+        return 1; // exit if this critical directory cannot be created
+    }
+    std::cout << "Ensured 'server_storage' directory exists.\n";
 
     // Loop through the command-line arguments.
     for (int i = 1; i < argc; ++i)
