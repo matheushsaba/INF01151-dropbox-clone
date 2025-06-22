@@ -312,11 +312,6 @@ bool recover_session_handshake(std::shared_ptr<ClientSession> session) {
         new_primary_addr = g_current_primary_address;
     }
 
-    if (session->current_rm_ip == new_primary_addr.ip) {
-        std::cerr << "[FE-RECOVERY] Session already points to the current leader. The failure might be something else." << std::endl;
-        return false;
-    }
-
     std::cout << "[FE-RECOVERY] Trying re-handshake with the new leader: " << new_primary_addr.ip << std::endl;
 
     int rm_sock = socket(AF_INET, SOCK_STREAM, 0);
