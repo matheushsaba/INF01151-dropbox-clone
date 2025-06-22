@@ -514,6 +514,13 @@ void request_full_sync_from_primary(const std::string& primary_ip) {
         return;
     }
 
+    // Connect to the primary's replication listener port
+    if (connect(s, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) < 0) {
+        std::cerr << "[Backup sync] Failed to connect to primary " << primary_ip << ":" << REPLICATION_PORT << " for sync request.\n";
+        close(s);
+        return;
+    }
+
     // send full sync request command:
     Packet req_pkt{};
     req_pkt.type = PACKET_TYPE_CMD;
@@ -600,7 +607,3 @@ void request_full_sync_from_primary(const std::string& primary_ip) {
     if (outfile.is_open()) outfile.close();
     close(s);
 }
-
-
-
-

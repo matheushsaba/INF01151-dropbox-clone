@@ -510,9 +510,13 @@ void run_as_primary() {
     start_primary_heartbeat_ping();
 
     // Start the primary's dedicated replication listener for backups
-    start_primary_replication_listener(); 
-    connect_to_all_backup_replication_ports_for_push();
+    start_primary_replication_listener();
 
+    // Give spawned threads a moment to initialize their services (e.g., open sockets).
+    // This is a simple way to mitigate race conditions where initialization in a
+    // detached thread is not complete before the next function is called.
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    connect_to_all_backup_replication_ports_for_push();
     // Start listening to client connections
     start_primary_server_client_connections();
 
@@ -541,8 +545,11 @@ void run_as_backup(const std::string& primary_ip) {
 
     // Listen for replication data (listen_for_replication_data)
     start_backup_replication_listener();
+    // We must wait a bit to ensure the replication listener socket is up and running
+    // before we ask the primary to connect to it. This avoids a race condition.
+    std::this_thread::sleep_for(std::chrono::seconds(3));
     request_full_sync_from_primary(primary_ip);
-
+    
     // Stay alive until elected as new primary in a leader election
     while (g_role.load() == ROLE_BACKUP)
     {
