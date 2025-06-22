@@ -1,11 +1,4 @@
 # 🗂️ Sistema de Sincronização de Arquivos  
-> **Servidor primário + réplicas em “bully” + cliente** – C++17
-
-O projeto agora suporta **replicação passiva**: um servidor **primário** envia
-batimentos (*heartbeat*) para **backups**; caso o primário caia, os backups
-executam o **algoritmo Bully** para eleger um novo líder.
-
----
 
 ## 📁 Estrutura de Diretórios
 
@@ -29,11 +22,11 @@ executam o **algoritmo Bully** para eleger um novo líder.
 
 ---
 
-## 🛠️ Compilar
+## 🛠️ Compilação
 
 ```bash
 make          # gera bin/server_exec e bin/myClient
-
+```
 
 > ℹ️ Os diretórios `client_storage/` e `server_storage/` são criados/limpos automaticamente pelos alvos `make` e `make clean`.
 
@@ -46,11 +39,6 @@ make          # gera bin/server_exec e bin/myClient
 
 ---
 
-## 🛠️ Compilação
-
-```bash
-make
-```
 
 O alvo padrão:
 
@@ -68,6 +56,95 @@ O alvo padrão:
 | `make clean`     | Remove **executáveis**, **objetos** e todo o conteúdo de `client_storage/` e `server_storage/` |
 
 ---
+
+# Parte 1
+
+## ▶️ Execução
+
+### 1. Iniciar o servidor primário
+
+```bash
+./bin/server_exec  -p  --ip <meu_ip>
+# Exemplo local:
+./bin/server_exec -p --ip 127.0.0.1
+```
+
+🔧 Por padrão, o servidor escuta as portas:
+
+| Porta | Função                                      |
+| ----: | ------------------------------------------- |
+|  4000 | Comandos do cliente (list, delete, etc.)    |
+|  4001 | Watcher (filesystem events)                 |
+|  4002 | Transferência de arquivos (upload/download) |
+
+### 2. Iniciar o mesmo cliente em dispositivos diferentes 
+Simulação local deve ser adaptada para rodar em máquinas diferentes e mesma rede local
+
+Em um terminal:
+
+```bash
+./bin/myClient <usuario> <ip_servidor> <porta> 
+# Porta padrão: 4000
+# **Exemplo local**: abrir novo terminal e rodar:
+./bin/myClient testuser 127.0.0.1 4000
+```
+
+Em outro terminal, iniciar o mesmo cliente (ex: testuser):
+
+```bash
+./bin/myClient <usuario> <ip_servidor> <porta> 
+# Porta padrão: 4000
+# **Exemplo local**: abrir novo terminal e rodar:
+./bin/myClient testuser 127.0.0.1 4000
+```
+Após conectar, o cliente exibe um menu interativo.
+
+---
+
+## 💬 Comandos Disponíveis no Cliente
+
+| Comando                           | Descrição                             |
+| --------------------------------- | ------------------------------------- |
+| `upload <caminho_arquivo>`        | Envia arquivo ao servidor             |
+| `download <nome_arquivo>`         | Baixa arquivo do servidor             |
+| `list_server`                     | Lista arquivos do usuário no servidor |
+| `delete <nome_arquivo>`           | Remove arquivo do servidor            |
+| `exit`                            | Encerra a conexão                     |
+
+---
+
+## 🚀 Testando um Upload Rápido
+
+```bash
+# 1. Crie um arquivo de teste
+ echo "Exemplo de conteúdo" > exemplo.txt
+
+# 2. No cliente, execute
+ upload exemplo.txt
+```
+
+Você deverá ver logs no servidor semelhantes a:
+
+```
+Recebendo arquivo: exemplo.txt
+Recebido pacote: seqn 1 com X bytes.
+Upload concluído.
+```
+
+O arquivo será salvo em `server_storage/exemplo.txt`.
+
+---
+
+# Parte 2
+> **Servidor primário + réplicas em “bully” + cliente** – C++17
+
+O projeto agora suporta **replicação passiva**: um servidor **primário** envia
+batimentos (*heartbeat*) para **backups**; caso o primário caia, os backups
+executam o **algoritmo Bully** para eleger um novo líder.
+
+---
+
+
 
 ## ▶️ Execução
 
@@ -113,32 +190,3 @@ Após conectar, o cliente exibe um menu interativo.
 
 ---
 
-## 🚀 Testando um Upload Rápido
-
-```bash
-# 1. Crie um arquivo de teste
- echo "Exemplo de conteúdo" > exemplo.txt
-
-# 2. No cliente, execute
- upload exemplo.txt
-```
-
-Você deverá ver logs no servidor semelhantes a:
-
-```
-Recebendo arquivo: exemplo.txt
-Recebido pacote: seqn 1 com X bytes.
-Upload concluído.
-```
-
-O arquivo será salvo em `server_storage/exemplo.txt`.
-
----
-
-## 🔧 Detalhes Internos de Portas
-
-| Porta | Função                    |
-| ----: | ------------------------- |
-|  4000 | Comandos gerais           |
-|  4001 | Watcher (futuramente)     |
-|  4002 | Transferência de arquivos |

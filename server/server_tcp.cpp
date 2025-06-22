@@ -19,6 +19,10 @@
 #include "heartbeat.h"
 #include <atomic>
 #include "election_bully.h"
+#include "replication.h"
+#include "server_tcp.h"
+
+
 
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
@@ -49,10 +53,13 @@ void handle_command_client(int client_socket, const std::string& username) {
 
     while (true) {
         if (!recv_packet(client_socket, pkt)) {
-            std::cerr << "Erro ao receber pacote de comando.\n";
+            std::cerr << "Error receiving commant packet.\n";
             close(client_socket);
             return;
         }
+
+        // TODO: put an if statement here for the server to print command received only when the packet type is PACKET_TYPE_CMD
+        
         std::string command(pkt.payload, pkt.length);
         std::cout << "Command received: " << command << std::endl;
         Packet response;
@@ -212,7 +219,7 @@ void handle_watcher_client(int client_socket, const std::string& dir) {
             struct inotify_event* event = (struct inotify_event*) ptr;
             if (event->len) {
                 Packet notify_pkt{};
-                notify_pkt.type = PACKET_TYPE_NOTIFY; // Define this in your protocol
+                notify_pkt.type = PACKET_TYPE_NOTIFY;
                 std::string msg = "Change: ";
                 if (event->mask & IN_CREATE) msg += "Created ";
                 if (event->mask & IN_MODIFY) msg += "Modified ";
@@ -272,6 +279,7 @@ void handle_file_client(int client_socket) {
             if (std::filesystem::exists(full_path)) {
                 if (std::filesystem::remove(full_path)) {
                     std::cout << "[DELETE] " << username << '/' << filename << " removed.\n";
+                    replicate_file_change(username, filename, PACKET_TYPE_DELETE);
                 } else {
                     std::cerr << "Error removing " << full_path << '\n';
                 }
@@ -302,6 +310,7 @@ void handle_file_client(int client_socket) {
                 }
                 if (pkt.length == 0) {                       // marcador EOF
                     std::cout << "Upload successful (" << filename << ").\n";
+                    replicate_file_change(username, filename, PACKET_TYPE_DATA);
                     break;                                   // volta ao laço externo p/ próximo arquivo
                 }
                 out.write(pkt.payload, pkt.length);
@@ -500,6 +509,10 @@ void run_as_primary() {
     // heartbeats to the ones already connected
     start_primary_heartbeat_ping();
 
+    // Start the primary's dedicated replication listener for backups
+    start_primary_replication_listener(); 
+    connect_to_all_backup_replication_ports_for_push();
+
     // Start listening to client connections
     start_primary_server_client_connections();
 
@@ -525,6 +538,10 @@ void run_as_backup(const std::string& primary_ip) {
     // Connects to the primary server via its ip and starts
     // listening for its heartbeats
     start_backup_heartbeat_listener(primary_ip);
+
+    // Listen for replication data (listen_for_replication_data)
+    start_backup_replication_listener();
+    request_full_sync_from_primary(primary_ip);
 
     // Stay alive until elected as new primary in a leader election
     while (g_role.load() == ROLE_BACKUP)
