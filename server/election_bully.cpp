@@ -25,6 +25,7 @@ static bool                     g_election_in_progress = false;
 static bool                     g_received_ok = false;
 
 static uint32_t                 g_my_pid; // my numeric priority
+static std::string              g_frontend_ip = "127.0.0.1"; // Default, can be overridden
 static std::string              g_my_ip;  // dotted quad
 static std::vector<std::string> g_peers;  // runtime list of backup servers
 static int          g_sock;               // TCP listening socket
@@ -165,6 +166,41 @@ void handle_election_connection(int sock, sockaddr_in addr)
     }
 }
 
+void notify_frontend_of_victory(const std::string& winner_ip) {
+    // Address and port of the Front-End for notifications
+    const int fe_notification_port = 9090;
+
+    std::cout << "[ELECT] Attempting to notify the Front-End at " << g_frontend_ip << ":" << fe_notification_port << "...\n";
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("[ELECT] ERROR: Failed to create socket to notify FE");
+        return;
+    }
+
+    sockaddr_in fe_addr{};
+    fe_addr.sin_family = AF_INET;
+    fe_addr.sin_port = htons(fe_notification_port);
+    if (inet_pton(AF_INET, g_frontend_ip.c_str(), &fe_addr.sin_addr) <= 0) {
+        perror("[ELECT] ERROR: Invalid FE address");
+        close(sock);
+        return;
+    }
+
+    // Connect to the Front-End
+    if (connect(sock, (struct sockaddr*)&fe_addr, sizeof(fe_addr)) == 0) {
+        // Send the message
+        // Port 4000 is the service port that the primary server uses for clients
+        std::string msg = "NEW_LEADER " + winner_ip + " 4000"; 
+        send(sock, msg.c_str(), msg.length(), 0);
+        close(sock);
+        std::cout << "[ELECT] SUCCESS: New leader notification sent to the Front-End.\n";
+    } else {
+        perror("[ELECT] ERROR: Failed to connect to the Front-End");
+        close(sock);
+    }
+}
+
 // This function implements the core logic for a server to start and potentially win a leader election
 void do_election()
 {
@@ -224,7 +260,6 @@ void do_election()
 
     // If we reach here, we timed out and no other coordinator was announced. We are the winner.
     lock.unlock(); // It's now safe to release the lock before broadcasting and promoting.
-
     std::cout << "[ELECT] Won election, broadcasting coordinator\n";
 
     // Iterate through all peers to announce our new leadership.
@@ -236,6 +271,7 @@ void do_election()
         }
     }
 
+    notify_frontend_of_victory(g_my_ip); // Notify the Front-End of the new leader
     // Transition this server's role from backup to primary.
     promote_to_primary();
 }
@@ -259,6 +295,13 @@ void listener()
     }
 }
 
+}
+
+// This function is called only when the first server is initialized via command terminal on server_tcp
+// Sets the IP address of the frontend server for notifications.
+void bully_set_frontend_ip(const std::string& fe_ip) {
+    std::lock_guard<std::mutex> lock(g_election_mutex);
+    g_frontend_ip = fe_ip;
 }
 
 // This function is called only when the first server is initialized via command terminal on server_tcp

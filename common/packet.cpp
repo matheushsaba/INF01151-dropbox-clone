@@ -46,27 +46,46 @@ bool recv_packet(int sockfd, Packet& pkt) {
     char header[10];
     int header_size = sizeof(pkt.type) + sizeof(pkt.seqn) + sizeof(pkt.total_size) + sizeof(pkt.length);
     int n = recv(sockfd, header, header_size, MSG_WAITALL);
-    if (n != header_size) {
-        perror("recv");
+    if (n != header_size) 
+    {
+        if (n == 0) {
+            // Connection closed by the other side. This is expected when a server goes down.
+            // We don't print anything to keep the client's terminal clean.
+        } else if (n > 0) {
+            // Received less data than expected, a protocol error.
+            std::cerr << "recv: Incomplete packet header received.\n";
+        } else {
+            // n < 0, a real socket error.
+            perror("recv_packet header");
+        }
         return false;
     }
 
     uint16_t length;
     std::memcpy(&length, header + header_size - sizeof(length), sizeof(length));
 
-    if (length > MAX_PAYLOAD_SIZE) {
+    if (length > MAX_PAYLOAD_SIZE) 
+    {
         return false;
     }
 
     char buffer[1500];
     std::memcpy(buffer, header, header_size);
-    if (length == 0) {
-        n = 0;
-    } else {
+    if (length > 0) 
+    {
         n = recv(sockfd, buffer + header_size, length, MSG_WAITALL);
-    }
-    if (n != length) {
-        return false;
+        if (n != length) 
+        {
+            if (n >= 0) {
+                // Case n=0 (connection closed) or 0<n<length (incomplete packet).
+                // Both indicate that the connection was lost during the payload transfer.
+                // We don't print anything to keep the client's terminal clean.
+            } else {
+                // n < 0, a real socket error.
+                perror("recv_packet (payload)");
+            }
+            return false; // Packet reception failure
+        }
     }
 
     int dsz = deserialize_packet(buffer, header_size + length, pkt);
