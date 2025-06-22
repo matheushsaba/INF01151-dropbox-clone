@@ -20,7 +20,7 @@
 #include <utime.h>
 #include "../common/FileInfo.hpp"
 
-extern void connect_to_port(int& socket_fd, int port);
+extern bool connect_to_port(int& socket_fd, int port);
 extern int file_socket;
 extern std::string hostname;
 
@@ -44,21 +44,20 @@ std::atomic<bool> watcher_running{true};
 std::string get_sync_dir();
 
 // Method to create a socket and connect it to the specified port
-void connect_to_port(int& socket_fd, int port) 
-{
-    sockaddr_in serv_addr{};    // Initializes a struct of type sockaddr_in that is going to be filled later. Slide 20 Aula-11
-    hostent* server = gethostbyname(hostname.c_str());  // Get server info based on hostname
+bool connect_to_port(int& socket_fd, int port) {
+    sockaddr_in serv_addr{};
+    hostent* server = gethostbyname(hostname.c_str());
 
-    if (!server) { // Server returns null if it fails to be found
-        std::cerr << "ERROR: No such host\n";
-        exit(1);
+    if (!server) {
+        std::cerr << "ERROR: No such host:" << hostname << std::endl;
+        return false;
     }
-
     // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
+
     socket_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_fd < 0) {
         perror("ERROR opening socket");
-        exit(1);
+        return false;
     }
 
     // Set server address and port. Slide 20 Aula-11
@@ -67,15 +66,14 @@ void connect_to_port(int& socket_fd, int port)
     serv_addr.sin_addr = *reinterpret_cast<in_addr*>(server->h_addr); // Copies the ip addres from gethostbyname(). server->h_addr is a pointer
     memset(&(serv_addr.sin_zero), 0, 8);
 
-    // Connect the socket to the server. Slide 23 Aula-11
-    int connect_result = connect(socket_fd, reinterpret_cast<sockaddr*>(&serv_addr), sizeof(serv_addr));
-    if (connect_result < 0) {
+    if (connect(socket_fd, reinterpret_cast<sockaddr*>(&serv_addr), sizeof(serv_addr)) < 0) {
         perror("ERROR connecting");
         close(socket_fd);
-        exit(1);
+        socket_fd = -1;
+        return false;
     }
+    return true;
 }
-
 void send_command(const std::string& cmd) 
 {
     Packet pkt{};
@@ -411,45 +409,38 @@ void watch_server_sync(int socket_fd)
     }
 }
 
-int main(int argc, char* argv[]) 
-{
+
+int main(int argc, char* argv[]) {
     if (argc < 4) {
-        std::cerr << "Usage: " << argv[0] 
-                  << " <username> <frontend_ip> <frontend_port>\n";
+        std::cerr << "Usage: " << argv[0] << " <username> <frontend_ip> <frontend_port>\n";
         return 1;
     }
-
     username = argv[1];
-    hostname = argv[2];             // IP of the FRONT-END
-    int port = std::stoi(argv[3]); // Port of the FRONT-END (e.g., 8080)
+    hostname = argv[2];
+    int port = std::stoi(argv[3]);
 
     // 1. Handshake connection
     int handshake_socket;
-    connect_to_port(handshake_socket, port);
-
+    if (!connect_to_port(handshake_socket, port)) {
+        std::cerr << "ERROR: Not possible to connect to Front-End in " << hostname << ":" << port << std::endl;
+        return 1;
+    }
+    
     Packet hello{};
     hello.type = PACKET_TYPE_CMD;
     hello.length = username.length();
-    std::memcpy(hello.payload, username.c_str(), hello.length);
+    memcpy(hello.payload, username.c_str(), hello.length);
     send_packet(handshake_socket, hello);
 
     // 2. Receive response and fake ports
     Packet reply{};
     if (!recv_packet(handshake_socket, reply) || std::string(reply.payload, reply.length) != "OK") {
-        std::cerr << "❌ Failed to receive response from server: " << std::string(reply.payload, reply.length) << std::endl;
+   std::cerr << "❌ Failed to receive response from server: " << std::string(reply.payload, reply.length) << std::endl;
         close(handshake_socket);
         return 1;
     }
-    std::string response_msg(reply.payload, reply.length);
-    if (response_msg.rfind("DENY", 0) == 0) {
-        std::cerr << "❌ Connection denied: " << response_msg << '\n';
-        close(handshake_socket);
-        return 1;
-    }
-
-    // Assume OK and expect 3-port info next
     if (!recv_packet(handshake_socket, reply)) {
-        std::cerr << "❌ Failed to receive port info from front-end." << std::endl;
+ std::cerr << "❌ Failed to receive port info from front-end." << std::endl;
         close(handshake_socket);
         return 1;
     }
@@ -459,43 +450,55 @@ int main(int argc, char* argv[])
     std::string ports_str(reply.payload, reply.length);
     size_t p1 = ports_str.find('|');
     size_t p2 = ports_str.find('|', p1 + 1);
-    if (p1 == std::string::npos || p2 == std::string::npos) {
-        std::cerr << "❌ Malformed port message: " << ports_str << '\n';
-        return 1;
-    }
-
+    
     g_fake_command_port = std::stoi(ports_str.substr(0, p1));
     g_fake_watcher_port = std::stoi(ports_str.substr(p1 + 1, p2 - p1 - 1));
     g_fake_file_port = std::stoi(ports_str.substr(p2 + 1));
 
-    connect_to_port(g_command_socket, g_fake_command_port);
-    std::cout << "✅ Connected to command socket on fake port " << g_fake_command_port << std::endl;
+    if (!connect_to_port(g_command_socket, g_fake_command_port)) { return 1; }
+    std::cout << "✅ Connected to command channel via Front-End" << std::endl;
 
-    connect_to_port(g_watcher_socket, g_fake_watcher_port);
-    std::cout << "✅ Connected to watcher socket on fake port " << g_fake_watcher_port << " by front-end" << std::endl;
-
+    if (!connect_to_port(g_watcher_socket, g_fake_watcher_port)) { return 1; }
+    std::cout << "✅ Connected to watcher via Front-End." << std::endl;
+    
     // File port will be opened only when sending a file
     std::cout << "Local sync directory: " << get_sync_dir() << std::endl;
 
-    // 4. Start threads and main loop
-    // sync_with_server(); // Uncomment if adapting to new socket logic
-    std::thread(watch_server_sync, g_watcher_socket).detach();
-    // std::thread(watch_sync_dir_inotify).detach(); // Uncomment if adapting send_file
+    // 4. Initial Sync and Background Threads
+    sync_with_server();
 
+    std::thread watcher_thread(watch_server_sync, g_watcher_socket);
+    std::thread inotify_thread(watch_sync_dir_inotify);
+    
     init_command_callbacks(send_command, send_file);
 
+    // 5. User Command Loop
     std::string input;
     while (true) {
         print_menu();
-        std::getline(std::cin, input);
-        if (std::cin.eof() || input == "exit") {
+        std::cout << username << "> ";
+        std::flush(std::cout);
+        if (!std::getline(std::cin, input)) { // Lida com Ctrl+D
+            watcher_running = false;
+            break;
+        }
+        if (input == "exit") {
+            watcher_running = false;
             break;
         }
         process_command(input);
     }
-
-    // 5. Cleanup
-    watcher_running = false;
+    
+    // 6. Cleanup 
+    std::cout << "\nEncerrando... Por favor, aguarde o término das threads." << std::endl;
+    //  Close sockets to unblock threads from blocking network calls
+    shutdown(g_watcher_socket, SHUT_RDWR);
+    shutdown(g_command_socket, SHUT_RDWR);
+    
+   // Wait for threads to finish
+    watcher_thread.join();
+    inotify_thread.join();
+    
     cleanup_sockets();
     
     std::cout << "Closing connection..." << std::endl;

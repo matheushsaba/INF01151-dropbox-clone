@@ -16,7 +16,7 @@ static std::function<void(const std::string&)> send_command_function;
 static std::function<void(const std::string&)> send_file_function;
 
 extern std::string username;
-extern void connect_to_port(int& socket_fd, int port);
+extern bool connect_to_port(int& socket_fd, int port);
 
 void init_command_callbacks(
     std::function<void(const std::string&)> send_command_cb,
