@@ -19,6 +19,8 @@
 #include <map> 
 #include <utime.h>
 #include "../common/FileInfo.hpp"
+#include <thread>
+#include <chrono>
 
 extern void connect_to_port(int& socket_fd, int port);
 extern int file_socket;
@@ -518,6 +520,7 @@ int main(int argc, char* argv[])
 
     std::string input;
     while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
         print_menu();
         std::getline(std::cin, input);
         if (input == "exit") {
