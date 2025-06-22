@@ -334,8 +334,13 @@ void bully_init(const std::string& my_ip)
     sockaddr_in this_server_address{};
     this_server_address.sin_family = AF_INET;
     this_server_address.sin_port = htons(ELECTION_PORT);
-    this_server_address.sin_addr.s_addr = INADDR_ANY;
-    if (bind(g_sock, reinterpret_cast<sockaddr*>(&this_server_address), sizeof(this_server_address)) < 0) 
+    if (inet_pton(AF_INET, my_ip.c_str(), &this_server_address.sin_addr) <= 0) {
+        std::cerr << "[ELECT] Invalid address for binding: " << my_ip << '\n';
+        close(g_sock);
+        std::exit(EXIT_FAILURE);
+    }
+
+    if (bind(g_sock, reinterpret_cast<sockaddr*>(&this_server_address), sizeof(this_server_address)) < 0)
     {
         perror("[ELECT] bind failed");
         close(g_sock);
