@@ -515,6 +515,10 @@ void run_as_primary() {
 
     // Start the primary's dedicated replication listener for backups
     start_primary_replication_listener(); 
+
+    // add timer 
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+
     connect_to_all_backup_replication_ports_for_push();
 
     // Start listening to client connections
@@ -545,8 +549,12 @@ void run_as_backup(const std::string& primary_ip) {
     // listening for its heartbeats
     start_backup_heartbeat_listener(primary_ip);
 
-    // Listen for replication data (listen_for_replication_data)
+    // Listen for replication data 
     start_backup_replication_listener();
+
+    //add timer
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+
     request_full_sync_from_primary(primary_ip);
 
     // Stay alive until elected as new primary in a leader election
