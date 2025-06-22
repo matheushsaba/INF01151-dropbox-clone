@@ -124,6 +124,9 @@ void session_handshake_thread(int client_handshake_sock) {
     int real_cmd_port, real_watch_port, real_file_port;
     sscanf(real_ports_str.c_str(), "%d|%d|%d", &real_cmd_port, &real_watch_port, &real_file_port);
 
+    std::cout << "[FE-HANDSHAKE] for client " << username << ", real ports received: CMD=" << real_cmd_port 
+          << ", WATCH=" << real_watch_port << ", FILE=" << real_file_port << std::endl;
+
     auto session = std::make_shared<ClientSession>(username, primary_addr.ip);
 
     std::vector<int> fake_ports;
@@ -156,15 +159,23 @@ void proxy_connection_thread(std::shared_ptr<ClientSession> session, int fake_li
         int client_sock = accept(fake_listener_sock, nullptr, nullptr);
         if (client_sock < 0) continue;
 
+        std::cout << "[FE-PROXY] Client connection received in fake port: " << fake_port << std::endl;
+        
         std::thread([=]() {
             int real_port;
             std::string rm_ip;
 
-            { // Lock scope
+            try {
                 std::lock_guard<std::mutex> lock(session->mtx);
                 real_port = session->port_map.at(fake_port);
                 rm_ip = session->current_rm_ip;
+            } catch (const std::out_of_range& e) {
+                std::cerr << "[FE] ERROR: Port mapping not found for fake port " << fake_port  << std::endl;
+                close(client_sock);
+                return; 
             }
+
+            std::cout << "[FE-PROXY] Mapping found for " << fake_port << ": forwarded for real port " << rm_ip << ":" << real_port << std::endl;
 
             int rm_sock = socket(AF_INET, SOCK_STREAM, 0);
             sockaddr_in rm_addr{};

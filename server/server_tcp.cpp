@@ -50,6 +50,7 @@ std::string get_sync_dir(const std::string& username) {
 
 // Function to deal with simple command messages
 void handle_command_client(int client_socket, const std::string& username) {
+    std::cout << "[RM-HANDLER] Thread 'handle_command_client' created for socket " << client_socket << std::endl;
     Packet pkt;
 
     while (true) {
@@ -241,6 +242,8 @@ void handle_watcher_client(int client_socket, const std::string& dir) {
 }
 
 void handle_file_client(int client_socket) {
+    std::cout << "[RM-HANDLER] Thread 'handle_file_client' iniciada para o socket " << client_socket << std::endl;
+
     Packet pkt;
 
     while (true) {                               // ❶ laço externo = 1-conexão / N-arquivos
@@ -400,6 +403,8 @@ void handle_new_connection(int listener_socket) {
             int cmd_sock   = create_dynamic_socket(cmd_port);
             int watch_sock = create_dynamic_socket(watch_port);
             int file_sock  = create_dynamic_socket(file_port);
+            std::cout << "[RM] Sessão para " << username << ": Porta de Comando=" << cmd_port 
+             << ", Porta de Watcher=" << watch_port << ", Porta de Arquivo=" << file_port << std::endl;
             std::cerr << "🔗 Command socket: " << cmd_sock << '\n';
             std::cerr << "🔗 Watcher socket: " << watch_sock << '\n';
             std::cerr << "🔗 File transfer socket: " << file_sock << '\n';
