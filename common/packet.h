@@ -20,6 +20,10 @@ enum PacketType {
     PACKET_TYPE_COORD = 9,   // <— coordinator announcement
     PACKET_TYPE_OK = 10,   // reply: “I‘m alive and stronger”
     PACKET_TYPE_PEERLIST = 11   // (comma-separated "ip1,ip2,…")
+    PACKET_TYPE_REPLICATE_CMD,   // Comando do primário para o backup replicar uma ação
+    PACKET_TYPE_REPLICATE_DATA,  // Pacote de dados para a replicação
+    PACKET_TYPE_REPLICATE_END,   // Marcador de fim de dados para replicação
+    PACKET_TYPE_ACK_REPLICATE  
 };
 
 struct Packet {

@@ -14,6 +14,7 @@
 #include "election_bully.h"
 #include <algorithm>
 
+
 constexpr int HEARTBEAT_PORT        = 3002;      // single well-known port
 constexpr int HB_INTERVAL_MS = 250;       // send every 250 ms
 constexpr int HB_TIMEOUT_MS  = 1500;      // 1.5 s → primary presumed dead
@@ -251,6 +252,33 @@ void backup_heartbeat_watch_loop(int sock)
                 // Skip updating 'last' for peerlist packets, as they aren't heartbeats
                 continue;
             }
+            else if (pkt.type == PACKET_TYPE_REPLICATE_CMD) {
+                // É um comando de replicação! Inicia o processo de salvar o arquivo.
+                // Esta lógica será muito parecida com a de handle_file_client
+                std::string header(pkt.payload, pkt.length);
+                // Extrai username e filename do cabeçalho...
+                std::string full_path = get_sync_dir(username) + "/" + filename;
+                
+                std::ofstream out(full_path, std::ios::binary);
+                
+                // Entra em um loop para receber os pacotes de dados
+                Packet data_pkt;
+                while (true) {
+                    if (!recv_packet(sock, data_pkt)) { /* Tratar erro */ break; }
+                    if (data_pkt.type == PACKET_TYPE_REPLICATE_END) break; // Fim da transmissão
+                    if (data_pkt.type == PACKET_TYPE_REPLICATE_DATA) {
+                        out.write(data_pkt.payload, data_pkt.length);
+                    }
+                }
+                out.close();
+                std::cout << "[REPLICATE] Arquivo " << filename << " replicado com sucesso." << std::endl;
+                
+                // Envia o ACK de volta para o primário
+                Packet ack_pkt;
+                ack_pkt.type = PACKET_TYPE_ACK_REPLICATE;
+                ack_pkt.length = 0;
+                send_packet(sock, ack_pkt);
+            }
         }
 
         // Calculate the time elapsed since the last heartbeat was received
@@ -302,4 +330,59 @@ void start_backup_heartbeat_listener(const std::string& primary_ip)
 
     // Starts a watcher which will monitor the heartbeat of the primary server
     std::thread(backup_heartbeat_watch_loop, s).detach();
+}
+bool replicate_to_backups(const std::vector<Packet>& packets_to_replicate) {
+    if (packets_to_replicate.empty()) {
+        return true; // Nada a replicar
+    }
+
+    // Pega uma cópia da lista de backups para não segurar o lock por muito tempo
+    std::vector<int> current_backups;
+    {
+        std::lock_guard<std::mutex> lock(hb_mtx);
+        current_backups = hb_clients;
+    }
+    
+    if (current_backups.empty()) {
+        return true; // Não há backups para replicar, considera sucesso.
+    }
+
+    std::cout << "[REPLICATE] Replicando operação para " << current_backups.size() << " backup(s)..." << std::endl;
+
+    // Envia a operação para cada backup e espera uma confirmação síncrona
+    for (int backup_sock : current_backups) {
+        bool backup_success = true;
+        
+        // Envia todos os pacotes da operação (cabeçalho + dados + fim)
+        for (const auto& pkt : packets_to_replicate) {
+            Packet replicate_pkt = pkt; // Copia o pacote
+            
+            // Mapeia o tipo original para o tipo de replicação
+            if (replicate_pkt.type == PACKET_TYPE_CMD) replicate_pkt.type = PACKET_TYPE_REPLICATE_CMD;
+            else if (replicate_pkt.type == PACKET_TYPE_DATA) replicate_pkt.type = PACKET_TYPE_REPLICATE_DATA;
+            else if (replicate_pkt.type == PACKET_TYPE_END) replicate_pkt.type = PACKET_TYPE_REPLICATE_END;
+
+            if (!send_packet(backup_sock, replicate_pkt)) {
+                std::cerr << "[REPLICATE] Falha ao enviar pacote de replicação para o socket " << backup_sock << std::endl;
+                backup_success = false;
+                break; // Para de enviar para este backup se falhar
+            }
+        }
+        
+        if (!backup_success) continue; // Pula para o próximo backup
+
+        // Agora, espera pela confirmação (ACK) deste backup
+        Packet ack_pkt;
+        // NOTA: recv_packet pode precisar de um timeout aqui para não bloquear indefinidamente
+        if (!recv_packet(backup_sock, ack_pkt) || ack_pkt.type != PACKET_TYPE_ACK_REPLICATE) {
+            std::cerr << "[REPLICATE] Backup " << backup_sock << " não confirmou a replicação." << std::endl;
+            // Em uma implementação mais robusta, você poderia remover este backup da lista.
+            // Por enquanto, consideramos que a replicação geral falhou.
+            return false;
+        }
+        std::cout << "[REPLICATE] Backup " << backup_sock << " confirmou a replicação." << std::endl;
+    }
+    
+    std::cout << "[REPLICATE] Todos os backups confirmaram." << std::endl;
+    return true;
 }

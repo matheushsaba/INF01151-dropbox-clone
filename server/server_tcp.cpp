@@ -243,88 +243,90 @@ void handle_watcher_client(int client_socket, const std::string& dir) {
 }
 
 void handle_file_client(int client_socket) {
-    std::cout << "[RM-HANDLER] Thread 'handle_file_client' iniciada para o socket " << client_socket << std::endl;
-
-    Packet pkt;
-
-    while (true) {                               // ❶ laço externo = 1-conexão / N-arquivos
-        /* ---------- 1. Cabeçalho “putfile|<user>|<fname>” ---------- */
-        if (!recv_packet(client_socket, pkt)) {          // EOF ou erro → fecha conexão
-            break;
-        }
-        if (pkt.type != PACKET_TYPE_CMD) {               // protocolo inesperado
-            std::cerr << "Invalid packet type.\n";
-            break;
+    while (true) {
+        // 1. Recebe o pacote de comando inicial (cabeçalho)
+        Packet header_pkt;
+        if (!recv_packet(client_socket, header_pkt)) {
+            // Conexão fechada pelo cliente ou erro
+            break; 
         }
 
-        std::string header(pkt.payload, pkt.length);
-        if ((header.rfind("putfile|", 0) != 0) && header.rfind("delfile|", 0) != 0) {          // qualquer outro comando → encerra
-            std::cerr << "Malformed header: " << header << '\n';
+        if (header_pkt.type != PACKET_TYPE_CMD) {
+            std::cerr << "[HANDLE_FILE] Erro de protocolo: esperado CMD, recebeu " << header_pkt.type << std::endl;
             break;
         }
 
-        /* Extrai user e filename */
-        size_t p1 = header.find('|');
-        size_t p2 = header.find('|', p1 + 1);
-        if (p1 == std::string::npos || p2 == std::string::npos) {
-            std::cerr << "Malformed header: " << header << '\n';
+        std::string header(header_pkt.payload, header_pkt.length);
+        bool is_upload = (header.rfind("putfile|", 0) == 0);
+        bool is_delete = (header.rfind("delfile|", 0) == 0);
+
+        if (!is_upload && !is_delete) {
+            std::cerr << "[HANDLE_FILE] Comando de arquivo malformado: " << header << std::endl;
             break;
         }
-        std::string username = header.substr(p1 + 1, p2 - p1 - 1);
-        std::string filename = header.substr(p2 + 1);
 
-        /* ---------- 2. Abre destino seguro ---------- */
-        std::string full_path = get_sync_dir(username) + "/" + filename;
-        if (header.rfind("delfile|", 0) == 0) {
-            std::lock_guard<std::mutex> lock(file_mutex);
-            if (std::filesystem::exists(full_path)) {
-                if (std::filesystem::remove(full_path)) {
-                    std::cout << "[DELETE] " << username << '/' << filename << " removed.\n";
-                    replicate_file_change(username, filename, PACKET_TYPE_DELETE);
-                } else {
-                    std::cerr << "Error removing " << full_path << '\n';
-                }
-            } else {
-                std::cerr << "File to delete not found: " << full_path << '\n';
-            }
-            goto close_connection; 
-        }
-        {
-            std::lock_guard<std::mutex> lock(file_mutex);   // protege criação do dir/arquivo
-            std::ofstream out(full_path, std::ios::binary);
-            if (!out.is_open()) {
-                std::cerr << "Not possible to create " << full_path << '\n';
-                break;
-            }
+        // 2. Bufferiza a operação completa em memória
+        std::vector<Packet> operation_packets;
+        operation_packets.push_back(header_pkt); // O próprio comando faz parte da replicação
 
-            std::cout << "[UPLOAD] " << username << '/' << filename << '\n';
-
-            /* ---------- 3. Blocos DATA até length==0 ---------- */
+        if (is_upload) {
+            std::cout << "[HANDLE_FILE] Recebendo e bufferizando upload..." << std::endl;
             while (true) {
-                if (!recv_packet(client_socket, pkt)) {      // drop inesperado
-                    std::cerr << "Connection lost during upload.\n";
-                    goto close_connection;                        // sai do dois níveis
+                Packet data_pkt;
+                if (!recv_packet(client_socket, data_pkt)) {
+                    std::cerr << "[HANDLE_FILE] Conexão perdida durante o upload do cliente." << std::endl;
+                    close(client_socket);
+                    return; // Encerra a thread
                 }
-                if (pkt.type != PACKET_TYPE_DATA) {
-                    std::cerr << "Got a type other than DATA.\n";
-                    goto close_connection;
-                }
-                if (pkt.length == 0) {                       // marcador EOF
-                    std::cout << "Upload successful (" << filename << ").\n";
-                    replicate_file_change(username, filename, PACKET_TYPE_DATA);
-                    break;                                   // volta ao laço externo p/ próximo arquivo
-                }
-                out.write(pkt.payload, pkt.length);
-                if (!out) {
-                    std::cerr << "Error writing at disk.\n";
-                    goto close_connection;
+                operation_packets.push_back(data_pkt);
+                if (data_pkt.type == PACKET_TYPE_DATA && data_pkt.length == 0) {
+                    break; // Fim do arquivo
                 }
             }
-        }   // mutex liberado aqui — permite outros uploads em paralelo
-        continue;                                           // pronto p/ novo cabeçalho
-    }
+        }
+        // Para 'delete', o cabeçalho é a única parte da operação.
 
-close_connection:
+        // 3. Replicação para os backups
+        // Esta chamada bloqueia até que todos os backups confirmem ou que um falhe.
+        bool replication_success = replicate_to_backups(operation_packets);
+
+        // 4. Se a replicação foi bem-sucedida, comita a alteração localmente
+        if (replication_success) {
+            size_t p1 = header.find('|');
+            size_t p2 = header.find('|', p1 + 1);
+            std::string username = header.substr(p1 + 1, p2 - p1 - 1);
+            std::string filename = header.substr(p2 + 1);
+            std::string full_path = get_sync_dir(username) + "/" + filename;
+
+            std::lock_guard<std::mutex> lock(file_mutex); // Garante acesso seguro ao sistema de arquivos
+            
+            if (is_upload) {
+                std::ofstream out(full_path, std::ios::binary);
+                // Escreve os dados do buffer em memória para o disco
+                // Pula o primeiro pacote (cabeçalho) e o último (marcador de fim)
+                for (size_t i = 1; i < operation_packets.size() - 1; ++i) {
+                    const auto& pkt = operation_packets[i];
+                    out.write(pkt.payload, pkt.length);
+                }
+                out.close();
+                std::cout << "[COMMIT] Upload de " << filename << " salvo localmente após replicação." << std::endl;
+            } else if (is_delete) {
+                if (std::filesystem::exists(full_path)) {
+                    std::filesystem::remove(full_path);
+                    std::cout << "[COMMIT] Deleção de " << filename << " efetuada localmente após replicação." << std::endl;
+                }
+            }
+            
+            // TODO: Enviar um pacote de SUCESSO para o cliente, se o protocolo exigir.
+            // Ex: send_packet(client_socket, Packet::ack_packet("SUCCESS"));
+
+        } else {
+            std::cerr << "[ABORT] Operação abortada devido à falha na replicação. Fechando conexão." << std::endl;
+            // TODO: Enviar um pacote de FALHA para o cliente.
+            // Ex: send_packet(client_socket, Packet::ack_packet("FAIL_REPLICATION"));
+            break; // Sai do loop e fecha a conexão
+        }
+    }
     close(client_socket);
 }
 

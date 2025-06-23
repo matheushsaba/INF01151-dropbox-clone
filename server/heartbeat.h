@@ -5,6 +5,7 @@
 void start_primary_heartbeat_ping();
 void start_backup_heartbeat_listener(const std::string& primary_ip);
 void promote_to_primary();
+bool replicate_to_backups(const std::vector<Packet>&);
 
 // Global, thread-safe variable to hold the current server role.
 // std::atomic ensures that reads and writes are safe across different threads.
