@@ -14,7 +14,7 @@
 #include "election_bully.h"
 #include <algorithm>
 
-constexpr int HEARTBEAT_PORT        = 5001;      // single well-known port
+constexpr int HEARTBEAT_PORT        = 3002;      // single well-known port
 constexpr int HB_INTERVAL_MS = 250;       // send every 250 ms
 constexpr int HB_TIMEOUT_MS  = 1500;      // 1.5 s → primary presumed dead
 
@@ -195,8 +195,7 @@ void backup_heartbeat_watch_loop(int sock)
     auto last = clk::now(); // Record the time when the last heartbeat was received
 
     // Start an infinite loop to monitor the primary server heartbeat
-    while (true) 
-    {
+        while (g_role.load() == ROLE_BACKUP)     {
         fd_set rd{}; // Initialize a file descriptor set for the select() call
         FD_ZERO(&rd); // Clear the set
         FD_SET(sock, &rd); // Add the heartbeat socket to the set to monitor for readability
@@ -213,7 +212,7 @@ void backup_heartbeat_watch_loop(int sock)
             // If recv_packet returns false, the connection was closed by the primary
             if (!recv_packet(sock, pkt)) 
             {
-                std::cerr << "[HB] LOST - Primary TCP connection closed. Presumed down.\n";
+                std::cout << "[HB] current role :" << g_role.load() << '\n';
                 bully_start();
                 return; // Exit the function and the thread.
             }

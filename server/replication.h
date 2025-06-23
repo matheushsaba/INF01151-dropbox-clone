@@ -4,6 +4,7 @@
 #include <vector>
 #include <mutex>
 #include "../common/packet.h"
+#include "heartbeat.h"
 
 // dedicated port for inter-server replication communication
 constexpr int REPLICATION_PORT = 5003;
