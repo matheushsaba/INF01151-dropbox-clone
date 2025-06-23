@@ -16,6 +16,7 @@
 #include "replication.h"
 
 constexpr int HEARTBEAT_PORT        = 3002;      // single well-known port
+constexpr int HEARTBEAT_PORT        = 3002;      // single well-known port
 constexpr int HB_INTERVAL_MS = 250;       // send every 250 ms
 constexpr int HB_TIMEOUT_MS  = 1500;      // 1.5 s → primary presumed dead
 
@@ -81,6 +82,8 @@ void primary_heartbeat_accept_loop()
     }
     
     std::cout << "[HB] listening on :" << HEARTBEAT_PORT << '\n';
+    std::cout << "GOT HERE!!!!!!!!\n";
+    std::cout << "[HB] current role :" << g_role.load() << '\n';
 
     // Starts a loop that accepts backup servers that will listen to the heartbeat
     while (true) 
