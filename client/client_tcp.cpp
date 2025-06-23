@@ -19,6 +19,7 @@
 #include <map> 
 #include <utime.h>
 #include "../common/FileInfo.hpp"
+#include <sys/socket.h> 
 
 extern bool connect_to_port(int& socket_fd, int port);
 extern int file_socket;
@@ -75,8 +76,43 @@ bool connect_to_port(int& socket_fd, int port) {
     }
     return true;
 }
+
+bool is_socket_alive(int sock) {
+    if (sock < 0) {
+        return false;
+    }
+    char buf;
+    // recv with MSG_PEEK read the first byte of data without removing it from the queue.
+    // MSG_DONTWAIT (or MSG_NONBLOCK) to be non-blocking, so it returns immediately
+    int result = recv(sock, &buf, 1, MSG_PEEK | MSG_DONTWAIT);
+    if (result == 0) {
+        return false;
+    }
+    if (result < 0) {
+        // recv returned an error. if errno is EAGAIN or EWOULDBLOCK, 
+        // it means there are no data to read right now, the connecion is still alive.
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return true;
+        }
+        // any other error indicates a dead connection.
+        return false;
+    }
+    // If we successfully read a byte, the connection is alive.
+    return true;
+}
+
 void send_command(const std::string& cmd) 
 {
+    if (!is_socket_alive(g_command_socket)) {
+        std::cout << "\n[CLIENT] Command connection appears dead. Reconnecting..." << std::endl;
+        close(g_command_socket);
+        if (!connect_to_port(g_command_socket, g_fake_command_port)) {
+            perror("[CLIENT] ERROR: Failed to reconnect command channel");
+            return; 
+        }
+        std::cout << "[CLIENT] Command channel reconnected." << std::endl;
+    }
+
     Packet pkt{};
     pkt.type = PACKET_TYPE_CMD;
     pkt.length = std::min<int>(cmd.size(), MAX_PAYLOAD_SIZE);
@@ -491,7 +527,6 @@ int main(int argc, char* argv[]) {
     }
     
     // 6. Cleanup 
-    std::cout << "\nEncerrando... Por favor, aguarde o término das threads." << std::endl;
     //  Close sockets to unblock threads from blocking network calls
     shutdown(g_watcher_socket, SHUT_RDWR);
     shutdown(g_command_socket, SHUT_RDWR);

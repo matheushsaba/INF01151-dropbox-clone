@@ -22,12 +22,14 @@ struct Address {
 };
 
 using PortMap = std::map<int, int>; // Maps <fake_port_in_FE, real_port_in_RM>
-
 struct ClientSession {
     std::mutex mtx;
     std::string username;
     std::string current_rm_ip;
     PortMap port_map;
+    int fake_cmd_port = -1;
+    int fake_watch_port = -1;
+    int fake_file_port = -1;
 
     ClientSession(std::string uname, std::string rm_ip) : username(std::move(uname)), current_rm_ip(std::move(rm_ip)) {}
 };
@@ -38,6 +40,8 @@ std::mutex g_primary_address_mutex;
 std::map<std::string, std::shared_ptr<ClientSession>> g_active_sessions;
 std::mutex g_sessions_mutex;
 std::string g_frontend_ip;
+constexpr int RECOVERY_MAX_RETRIES = 5;
+constexpr int RECOVERY_RETRY_DELAY_S = 2;
 
 // --- Function Prototypes ---
 void session_handshake_thread(int client_handshake_sock);
@@ -121,34 +125,44 @@ void session_handshake_thread(int client_handshake_sock) {
     std::string real_ports_str(pkt.payload, pkt.length);
     close(rm_handshake_sock);
 
-    int real_cmd_port, real_watch_port, real_file_port;
+     int real_cmd_port, real_watch_port, real_file_port;
     sscanf(real_ports_str.c_str(), "%d|%d|%d", &real_cmd_port, &real_watch_port, &real_file_port);
-
-    std::cout << "[FE-HANDSHAKE] for client " << username << ", real ports received: CMD=" << real_cmd_port 
-          << ", WATCH=" << real_watch_port << ", FILE=" << real_file_port << std::endl;
-
+    
     auto session = std::make_shared<ClientSession>(username, primary_addr.ip);
 
-    std::vector<int> fake_ports;
-    std::vector<int> real_ports = {real_cmd_port, real_watch_port, real_file_port};
+    // Map the channels one by one explicitly
+    int fake_ports[3];
+    int real_ports[] = {real_cmd_port, real_watch_port, real_file_port};
 
-    for (int real_p : real_ports) {
-        int fake_listener_sock = create_listening_socket(0);
-        if (fake_listener_sock < 0) { continue; }
+    // Command channel
+    int fake_listener_cmd = create_listening_socket(0);
+    fake_ports[0] = get_socket_port(fake_listener_cmd);
+    session->fake_cmd_port = fake_ports[0];
+    session->port_map[session->fake_cmd_port] = real_ports[0];
+    std::thread(proxy_connection_thread, session, fake_listener_cmd).detach();
 
-        int fake_port = get_socket_port(fake_listener_sock);
-        session->port_map[fake_port] = real_p;
-        fake_ports.push_back(fake_port);
-        std::thread(proxy_connection_thread, session, fake_listener_sock).detach();
-    }
+    // Watcher channel
+    int fake_listener_watch = create_listening_socket(0);
+    fake_ports[1] = get_socket_port(fake_listener_watch);
+    session->fake_watch_port = fake_ports[1];
+    session->port_map[session->fake_watch_port] = real_ports[1];
+    std::thread(proxy_connection_thread, session, fake_listener_watch).detach();
+    
+    // File channel
+    int fake_listener_file = create_listening_socket(0);
+    fake_ports[2] = get_socket_port(fake_listener_file);
+    session->fake_file_port = fake_ports[2];
+    session->port_map[session->fake_file_port] = real_ports[2];
+    std::thread(proxy_connection_thread, session, fake_listener_file).detach();
 
+    // build the response string for the client
+    // The format is: cmd_port|watch_port|file_port
     std::string fake_ports_str = std::to_string(fake_ports[0]) + "|" + std::to_string(fake_ports[1]) + "|" + std::to_string(fake_ports[2]);
     pkt.length = fake_ports_str.length();
     memcpy(pkt.payload, fake_ports_str.c_str(), pkt.length);
     send_packet(client_handshake_sock, pkt);
 
     close(client_handshake_sock);
-
     std::lock_guard<std::mutex> lock(g_sessions_mutex);
     g_active_sessions[username] = session;
 }
@@ -314,15 +328,35 @@ bool recover_session_handshake(std::shared_ptr<ClientSession> session) {
 
     std::cout << "[FE-RECOVERY] Trying re-handshake with the new leader: " << new_primary_addr.ip << std::endl;
 
-    int rm_sock = socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in rm_addr{};
-    rm_addr.sin_family = AF_INET;
-    rm_addr.sin_port = htons(new_primary_addr.port);
-    inet_pton(AF_INET, new_primary_addr.ip.c_str(), &rm_addr.sin_addr);
+  int rm_sock = -1;
+    bool connected = false;
 
-    if (connect(rm_sock, (struct sockaddr*)&rm_addr, sizeof(rm_addr)) < 0) {
-        perror("[FE-RECOVERY] Failed to connect to the new primary");
-        close(rm_sock);
+    for (int i = 0; i < RECOVERY_MAX_RETRIES; ++i) {
+        rm_sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (rm_sock < 0) {
+            perror("[FE-RECOVERY] Failed to create socket");
+            return false;
+        }
+
+        sockaddr_in rm_addr{};
+        rm_addr.sin_family = AF_INET;
+        rm_addr.sin_port = htons(new_primary_addr.port);
+        inet_pton(AF_INET, new_primary_addr.ip.c_str(), &rm_addr.sin_addr);
+
+        if (connect(rm_sock, (struct sockaddr*)&rm_addr, sizeof(rm_addr)) == 0) {
+            connected = true;
+            std::cout << "[FE-RECOVERY] Successfully connected to the new primary on attempt " << i + 1 << std::endl;
+            break; 
+        }
+
+        close(rm_sock); 
+        std::cerr << "[FE-RECOVERY] Failed to connect. Retrying in " 
+                  << RECOVERY_RETRY_DELAY_S << "s... (" << i + 1 << "/" << RECOVERY_MAX_RETRIES << ")\n";
+        std::this_thread::sleep_for(std::chrono::seconds(RECOVERY_RETRY_DELAY_S));
+    }
+
+    if (!connected) {
+        std::cerr << "[FE-RECOVERY] Could not connect to the new primary after " << RECOVERY_MAX_RETRIES << " attempts." << std::endl;
         return false;
     }
 
@@ -340,16 +374,25 @@ bool recover_session_handshake(std::shared_ptr<ClientSession> session) {
     std::cout << "[FE-RECOVERY] New real ports received: " << new_real_ports_str << std::endl;
 
     int new_real_cmd, new_real_watch, new_real_file;
-    sscanf(new_real_ports_str.c_str(), "%d|%d|%d", &new_real_cmd, &new_real_watch, &new_real_file);
-
-    std::vector<int> new_real_ports = {new_real_cmd, new_real_watch, new_real_file};
-
-    int i = 0;
-    // The keys (fake ports) of the map don't change. Only the values (real ports) are updated.
-    for (auto it = session->port_map.begin(); it != session->port_map.end(); ++it) {
-        it->second = new_real_ports[i++];
+    // verify if the sscanf worked
+    if (sscanf(new_real_ports_str.c_str(), "%d|%d|%d", &new_real_cmd, &new_real_watch, &new_real_file) != 3) {
+        std::cerr << "[FE-RECOVERY] ERROR: Received malformed port string from new primary: " << new_real_ports_str << std::endl;
+        close(rm_sock);
+        return false;
     }
-    session->current_rm_ip = new_primary_addr.ip;
+    
+    close(rm_sock);
 
-    return true;
+    // update the port map in the session
+    session->port_map[session->fake_cmd_port] = new_real_cmd;
+    session->port_map[session->fake_watch_port] = new_real_watch;
+    session->port_map[session->fake_file_port] = new_real_file;
+
+    session->current_rm_ip = new_primary_addr.ip;
+    
+    std::cout << "[FE-RECOVERY] Port map updated: fake_cmd(" << session->fake_cmd_port << ") -> " << new_real_cmd 
+              << ", fake_watch(" << session->fake_watch_port << ") -> " << new_real_watch 
+              << ", fake_file(" << session->fake_file_port << ") -> " << new_real_file << std::endl;
+
+    return true;  
 }
