@@ -20,7 +20,7 @@
 #include <atomic>
 #include "election_bully.h"
 #include <vector>
-
+#include <condition_variable>
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
 
@@ -245,7 +245,6 @@ void handle_file_client(int client_socket) {
     while (true) {                               // ❶ laço externo = 1-conexão / N-arquivos
         /* ---------- 1. Cabeçalho “putfile|<user>|<fname>” ---------- */
         if (!recv_packet(client_socket, pkt)) {          // EOF ou erro → fecha conexão
-            std::cerr << "End of connection.\n";
             break;
         }
         if (pkt.type != PACKET_TYPE_CMD) {               // protocolo inesperado
@@ -365,6 +364,17 @@ void handle_new_connection(int listener_socket) {
         }
 
         std::thread([client_fd]() {
+
+            // Structure to hold pending session information
+            // This will allow us to wait for both command and watch FDs to be ready
+            struct PendingSession {
+                std::mutex mtx;
+                std::condition_variable cv;
+                int cmd_fd = -1;
+                int watch_fd = -1;
+            };
+            auto pending_session = std::make_shared<PendingSession>();
+
             Packet pkt;
             if (!recv_packet(client_fd, pkt) || pkt.type != PACKET_TYPE_CMD) {
                 std::cerr << "❌ Error: failed to receive handshake packet.\n";
@@ -401,13 +411,13 @@ void handle_new_connection(int listener_socket) {
             int file_sock  = create_dynamic_socket(file_port);
             std::cout << "[RM] Sessão para " << username << ": Porta de Comando=" << cmd_port 
              << ", Porta de Watcher=" << watch_port << ", Porta de Arquivo=" << file_port << std::endl;
-            std::cerr << "🔗 Command socket: " << cmd_sock << '\n';
-            std::cerr << "🔗 Watcher socket: " << watch_sock << '\n';
-            std::cerr << "🔗 File transfer socket: " << file_sock << '\n';
-
+            
             if (cmd_sock < 0 || watch_sock < 0 || file_sock < 0) {
                 std::cerr << "❌ Failed to create dynamic sockets.\n";
                 close(client_fd);
+                // Decrement the session count if socket creation fails
+                std::lock_guard<std::mutex> lock(ctrl.mtx);
+                ctrl.active_sessions--;
                 return;
             }
 
@@ -419,26 +429,32 @@ void handle_new_connection(int listener_socket) {
             memcpy(reply.payload, ports_msg.c_str(), reply.length);
             send_packet(client_fd, reply);
 
-            close(client_fd); // Always close handshake socket
-
-            // Accept follow-up connections from the client on the 3 dynamic sockets
-            sockaddr_in tmp{};
-            socklen_t tmp_len = sizeof(tmp);
-            int cmd_client_fd   = accept(cmd_sock,   reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
-            int watch_client_fd = accept(watch_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
-
-            session_manager_register(session_manager, username, cmd_client_fd, watch_client_fd);
-
-            // Detach watchers for command and watcher as before
-            std::thread([watch_client_fd, username]() {
-                handle_watcher_client(watch_client_fd, get_sync_dir(username));
-            }).detach();
-            std::thread([cmd_client_fd, username]() {
-                handle_command_client(cmd_client_fd, username);
-
-                // Cleanup on disconnect
-                auto& ctrl = user_controls[username];
+            close(client_fd);
+            
+            // Thread to accept the command connection
+            std::thread([cmd_sock, pending_session, &username, &ctrl]() {
+                sockaddr_in tmp{};
+                socklen_t tmp_len = sizeof(tmp);
+                int accepted_fd = accept(cmd_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
+                close(cmd_sock);
+                if (accepted_fd < 0) {
+                    perror("accept failed on command socket");
+                }
+                
                 {
+                    std::lock_guard<std::mutex> lock(pending_session->mtx);
+                    pending_session->cmd_fd = accepted_fd;
+                }
+                pending_session->cv.notify_all(); // Notify the main thread that command connection has been obtained
+
+
+                if (accepted_fd >= 0) {
+                    handle_command_client(accepted_fd, username);
+                }
+
+                // the cleanup will be done by the cmd_fd (command) thread
+                session_manager_close_by_cmd_fd(session_manager, accepted_fd);
+                 {
                     std::lock_guard<std::mutex> lock(ctrl.mtx);
                     ctrl.active_sessions--;
                 }
@@ -446,23 +462,62 @@ void handle_new_connection(int listener_socket) {
                 std::cout << "👋 Session ended for " << username << '\n';
             }).detach();
 
-            // Start a thread that loops and handles multiple file uploads
+            // Thread to accept the watcher connection
+            std::thread([watch_sock, pending_session]() {
+                sockaddr_in tmp{};
+                socklen_t tmp_len = sizeof(tmp);
+                int accepted_fd = accept(watch_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
+                close(watch_sock);
+                if (accepted_fd < 0) {
+                    perror("accept failed on watch socket");
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(pending_session->mtx);
+                    pending_session->watch_fd = accepted_fd;
+                }
+                pending_session->cv.notify_all(); // Notify the main thread that watch connection has been obtained
+            }).detach();
+
+            // Thread to accept file connections
+            // This is independent and will handle file transfers
             std::thread([file_sock]() {
                 while (true) {
-                    sockaddr_in tmp{};
-                    socklen_t tmp_len = sizeof(tmp);
-                    int file_client_fd = accept(file_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
+                    int file_client_fd = accept(file_sock, nullptr, nullptr);
                     if (file_client_fd < 0) {
                         perror("accept failed on file socket");
                         continue;
                     }
                     std::thread(handle_file_client, file_client_fd).detach();
                 }
+                close(file_sock);
             }).detach();
 
-            close(cmd_sock);
-            close(watch_sock);
-            std::cout << "✅ User " << username << " fully connected (CMD/WATCH/FILE sockets established)\n";
+            // the main thread will wait for both command and watch FDs to be ready
+            {
+                std::unique_lock<std::mutex> lock(pending_session->mtx);
+                pending_session->cv.wait(lock, [&] {
+                    return pending_session->cmd_fd != -1 && pending_session->watch_fd != -1;
+                });
+
+                // now that we have both, we can call the original registration function
+                if (pending_session->cmd_fd >= 0 && pending_session->watch_fd >= 0) {
+                    session_manager_register(session_manager, username, pending_session->cmd_fd, pending_session->watch_fd);
+                    std::cout << "✅ User " << username << " session registered with CMD_FD=" << pending_session->cmd_fd
+                              << " and WATCH_FD=" << pending_session->watch_fd << std::endl;
+                    
+                    // the watcher thread needs to be started here, as we now have the FD
+                    std::thread(handle_watcher_client, pending_session->watch_fd, get_sync_dir(username)).detach();
+                } else {
+                     std::cerr << "❌ Failed to establish full session for " << username << ". Aborting.\n";
+                     // close the command and watch sockets if they were opened
+                     if (pending_session->cmd_fd >= 0) close(pending_session->cmd_fd);
+                     if (pending_session->watch_fd >= 0) close(pending_session->watch_fd);
+                     // decrement the session count
+                     std::lock_guard<std::mutex> lock(ctrl.mtx);
+                     ctrl.active_sessions--;
+                }
+            }
 
         }).detach();
     }
