@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <string>
 #include <atomic>
 void start_primary_heartbeat_ping();

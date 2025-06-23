@@ -1,3 +1,4 @@
+Testes parte 1:
 Verificar a operação correta do sync_dir. Inicialmente o device #1 deve colocar um arquivo texto em seu diretório sync_dir local. Verificar se o arquivo aparece corretamente no device #2.
 Device #2 edita o arquivo texto recebido no passo anterior, incluindo um texto adicional, e salva o arquivo. Alteração deve ser propagada para o device #1.
 Device #2 inclui um arquivo PDF em seu sync_dir local. Arquivo deve ser transferido automaticamente para o device #1.
@@ -5,3 +6,12 @@ Device #1 inclui um arquivo de vídeo em seu sync_dir local. Arquivo deve ser tr
 Device #1 faz o upload de um arquivo do desktop. Arquivo deve ser enviado para o servidor e propagado para os diretórios sync_dir de todos os devices daquele usuário. 
 Device #1 faz um download de um arquivo do servidor para o seu desktop. A cópia do arquivo no desktop deverá estar desvinculada do arquivo sincronizado no sync_dir.
 Device #2 desloga e depois loga novamente. Device deve ter uma visão consistente dos arquivos armazenados no servidor.
+
+Testes parte 2:
+Iniciar 3 processos servidores (1 primário e dois backups) em máquinas diferentes. Além disso, iniciar 2 devices de um mesmo cliente em máquinas diferentes.
+Os casos de teste consistirão em:
+Verificar a operação correta da primeira etapa do trabalho, isso é, arquivos colocados no sync_dir de um device devem aparecer no sync_dir de outro device, arquivos deletados no sync_dir de um device devem desaparecer do sync_dir de outro device, etc
+Verificar se os backups possuem uma cópia espelhada dos dados do primário
+Terminar de forma forçada o servidor primário e verificar se um dos backups assume como novo primário utilizando o algoritmo de eleição
+Repetir os testes e verificar se o serviço continua funcionando normalmente com o novo primário (deve funcionar com arquivos PDF, zip e imagens)
+Terminar o novo primário e voltar ao passo 

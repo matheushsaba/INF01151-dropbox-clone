@@ -21,12 +21,14 @@
 #include "election_bully.h"
 #include <vector>
 #include <condition_variable>
+#include "replication.h"
+#include "server_tcp.h"
+
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
 
 static SessionManager session_manager;
 std::atomic<ServerRole> g_role;
-
 std::string my_ip;
 
 std::string get_sync_dir(const std::string& username) {
@@ -51,10 +53,13 @@ void handle_command_client(int client_socket, const std::string& username) {
 
     while (true) {
         if (!recv_packet(client_socket, pkt)) {
-            std::cerr << "Erro ao receber pacote de comando.\n";
+            std::cerr << "Error receiving commant packet.\n";
             close(client_socket);
             return;
         }
+
+        // TODO: put an if statement here for the server to print command received only when the packet type is PACKET_TYPE_CMD
+        
         std::string command(pkt.payload, pkt.length);
         std::cout << "Command received: " << command << std::endl;
         Packet response;
@@ -214,7 +219,7 @@ void handle_watcher_client(int client_socket, const std::string& dir) {
             struct inotify_event* event = (struct inotify_event*) ptr;
             if (event->len) {
                 Packet notify_pkt{};
-                notify_pkt.type = PACKET_TYPE_NOTIFY; // Define this in your protocol
+                notify_pkt.type = PACKET_TYPE_NOTIFY;
                 std::string msg = "Change: ";
                 if (event->mask & IN_CREATE) msg += "Created ";
                 if (event->mask & IN_MODIFY) msg += "Modified ";
@@ -275,6 +280,7 @@ void handle_file_client(int client_socket) {
             if (std::filesystem::exists(full_path)) {
                 if (std::filesystem::remove(full_path)) {
                     std::cout << "[DELETE] " << username << '/' << filename << " removed.\n";
+                    replicate_file_change(username, filename, PACKET_TYPE_DELETE);
                 } else {
                     std::cerr << "Error removing " << full_path << '\n';
                 }
@@ -305,6 +311,7 @@ void handle_file_client(int client_socket) {
                 }
                 if (pkt.length == 0) {                       // marcador EOF
                     std::cout << "Upload successful (" << filename << ").\n";
+                    replicate_file_change(username, filename, PACKET_TYPE_DATA);
                     break;                                   // volta ao laço externo p/ próximo arquivo
                 }
                 out.write(pkt.payload, pkt.length);
@@ -571,6 +578,14 @@ void run_as_primary() {
     // heartbeats to the ones already connected
     start_primary_heartbeat_ping();
 
+    // Start the primary's dedicated replication listener for backups
+    start_primary_replication_listener(); 
+
+    // add timer 
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+
+    connect_to_all_backup_replication_ports_for_push();
+
     // Start listening to client connections
     start_primary_server_client_connections();
 
@@ -599,6 +614,14 @@ void run_as_backup(const std::string& primary_ip) {
     
     // TODO: Listen for replication data
 
+    // Listen for replication data 
+    start_backup_replication_listener();
+
+    //add timer
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+
+    request_full_sync_from_primary(primary_ip);
+
     // Stay alive until elected as new primary in a leader election
     while (g_role.load() == ROLE_BACKUP)
     {
@@ -621,6 +644,7 @@ static void usage(const char* prog_name)
 
 int main(int argc, char* argv[])
 {
+    std::cout << std::unitbuf;
     // Minimum args:
     // Primary: server -p --ip <self_ip> --frontend-ip <fe_ip> (6 args)
     // Backup:  server -b <primary_ip> --ip <self_ip> --frontend-ip <fe_ip> (7 args)
@@ -634,6 +658,16 @@ int main(int argc, char* argv[])
     std::string primary_ip;
     std::string self_ip;
     std::string frontend_ip;
+
+    // for the replication to work:
+    // ensure 'server_storage' base directory exists before any operations
+    std::error_code ec;
+    std::filesystem::create_directories("server_storage", ec);
+    if (ec) {
+        std::cerr << "Error: Could not create server_storage directory: " << ec.message() << '\n';
+        return 1; // exit if this critical directory cannot be created
+    }
+    std::cout << "Ensured 'server_storage' directory exists.\n";
 
     // Loop through the command-line arguments.
     for (int i = 1; i < argc; ++i)

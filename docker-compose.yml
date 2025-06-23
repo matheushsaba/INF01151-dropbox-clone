@@ -87,6 +87,8 @@ services:
           # Assign a static IP to this container
           ipv4_address: 172.28.0.14   # Map port 4000 on the host to port 4000 on this container.
       # This allows a client running on your Windows machine to connect to the primary.
+      stdin_open: true
+      tty: true
 
   # client 2
   client2:
