@@ -16,7 +16,7 @@ services:
     build: . # Build the image from the Dockerfile in the current directory
     container_name: primary-server
     # The command now uses a hardcoded IP address.
-    command: ["./bin/server_exec", "-p", "--ip", "172.28.0.10"]
+    command: ["./bin/server_exec", "-p", "--ip", "172.28.0.10", "--frontend-ip", "172.28.0.13"]
     environment:
       - SERVICE_NAME=primary
     networks:
@@ -25,15 +25,32 @@ services:
         ipv4_address: 172.28.0.10
     # Map port 4000 on the host to port 4000 on this container.
     # This allows a client running on your Windows machine to connect to the primary.
+
+  # The Primary Server
+  frontend:
+    build: . # Build the image from the Dockerfile in the current directory
+    container_name: frontend-server
+    # The command now uses a hardcoded IP address.
+    command: ["./bin/frontend_exec", "172.28.0.13", "172.28.0.10", "4000"]
+    environment:
+      - SERVICE_NAME=frontend
+    networks:
+      dropbox-net:
+        # Assign a static IP to this container
+        ipv4_address: 172.28.0.13
+    # Map port 4000 on the host to port 4000 on this container.
+    # This allows a client running on your Windows machine to connect to the primary.
     ports:
       - "4000:4000"
+      - "8080:8080"
+      - "9090:9090"
 
   # The First Backup Server
   backup1:
     build: .
     container_name: backup-server-1
     # The command now uses hardcoded IPs for both the primary and itself.
-    command: ["./bin/server_exec", "-b", "172.28.0.10", "--ip", "172.28.0.11"]
+    command: ["./bin/server_exec", "-b", "172.28.0.10", "--ip", "172.28.0.11", "--frontend-ip", "172.28.0.13"]
     environment:
       - SERVICE_NAME=backup1
     networks:
@@ -48,7 +65,7 @@ services:
     build: .
     container_name: backup-server-2
     # The command now uses hardcoded IPs.
-    command: ["./bin/server_exec", "-b", "172.28.0.10", "--ip", "172.28.0.12"]
+    command: ["./bin/server_exec", "-b", "172.28.0.10", "--ip", "172.28.0.12", "--frontend-ip", "172.28.0.13"]
     environment:
       - SERVICE_NAME=backup2
     networks:
