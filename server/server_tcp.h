@@ -8,7 +8,6 @@
 // variáveis globais definidas em server_tcp.cpp
 extern std::mutex file_mutex;
 extern std::mutex socket_creation_mutex;
-extern std::atomic<ServerRole> g_role;
 extern std::string my_ip;
 
 // declarações de funções

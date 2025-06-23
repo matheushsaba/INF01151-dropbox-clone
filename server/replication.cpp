@@ -21,47 +21,53 @@ std::mutex g_replication_peers_mtx;
 // private helper functions:
 
 // handles an incoming connection from a backup server on the primary
-
 void handle_backup_initial_sync_request(int backup_connected_socket) {
     Packet pkt;
-    // Loop to receive requests from the backup.
-    // A backup might send a "FULL_SYNC_REQUEST" or similar to get its state.
-    while (recv_packet(backup_connected_socket, pkt)) {
+    if (!recv_packet(backup_connected_socket, pkt)) {
+        std::cerr << "[Primary Replication] Error receiving initial sync request packet. Closing socket.\n";
+        close(backup_connected_socket);
+        return;
+    }
+
+    // loop to receive requests from the backup like "FULL_SYNC_REQUEST"
         if (pkt.type == PACKET_TYPE_CMD) {
             std::string cmd_str(pkt.payload, pkt.length);
             if (cmd_str == "FULL_SYNC_REQUEST") {
                 std::cout << "[Primary Replication] Received FULL_SYNC_REQUEST from backup (fd=" << backup_connected_socket << ").\n";
 
-                // Acquire file_mutex to ensure consistent read of server_storage
+                // file_mutex to ensure consistent read of server_storage
                 std::lock_guard<std::mutex> lock(file_mutex);
 
                 std::string base_dir = "server_storage";
-                // Iterate through all user directories in server_storage
-                for (const auto& entry : std::filesystem::directory_iterator(base_dir)) {
-                    // Check if it's a directory and starts with "sync_dir_"
-                    if (entry.is_directory() && entry.path().filename().string().rfind("sync_dir_", 0) == 0) {
-                        std::string username_dir_name = entry.path().filename().string(); // e.g., sync_dir_alice
-                        std::string username = username_dir_name.substr(username_dir_name.find('_') + 1); // Extract "alice"
+                bool files_to_send = false;
 
-                        // Iterate through all files within this user's sync_dir
+                // iterate through all user directories in server_storage
+                for (const auto& entry : std::filesystem::directory_iterator(base_dir)) {
+                    // check if it's a directory and starts with "sync_dir_"
+                    if (entry.is_directory() && entry.path().filename().string().rfind("sync_dir_", 0) == 0) {
+                        std::string username_dir_name = entry.path().filename().string(); // ex. sync_dir_alice
+                        std::string username = username_dir_name.substr(username_dir_name.find('_') + 1); // get "alice"
+
+                        // iterate through all files within this user's sync_dir
                         for (const auto& file_entry : std::filesystem::directory_iterator(entry.path())) {
-                            if (file_entry.is_regular_file()) { // Only replicate regular files
+                            if (file_entry.is_regular_file()) { // only replicate regular files (contain data)
+                                files_to_send = true;
                                 std::string filename = file_entry.path().filename().string();
                                 std::string full_filepath = file_entry.path().string();
 
-                                // 1. Send file header (a replication-specific command)
+                                // 1. send file header (a replication-specific command)
                                 Packet file_header_pkt{};
-                                file_header_pkt.type = PACKET_TYPE_CMD; // Reusing CMD for command, but payload indicates intent
+                                file_header_pkt.type = PACKET_TYPE_CMD; 
                                 std::string header_msg = "replicate_upload|" + username + "|" + filename;
                                 file_header_pkt.length = std::min((int)header_msg.size(), MAX_PAYLOAD_SIZE);
                                 std::memcpy(file_header_pkt.payload, header_msg.c_str(), file_header_pkt.length);
                                 if (!send_packet(backup_connected_socket, file_header_pkt)) {
                                     std::cerr << "[Primary Sync] Error sending file header to backup (fd=" << backup_connected_socket << ").\n";
                                     // Handle error (e.g., close socket, log, skip file)
-                                    goto next_file; // Use goto for simple error exit from inner loop
+                                    goto next_file;
                                 }
 
-                                // 2. Send file content using PACKET_TYPE_DATA
+                                // 2. send file content using PACKET_TYPE_DATA
                                 std::ifstream file(full_filepath, std::ios::binary);
                                 if (file.is_open()) {
                                     char buffer[MAX_PAYLOAD_SIZE];
@@ -78,31 +84,38 @@ void handle_backup_initial_sync_request(int backup_connected_socket) {
                                             goto next_file;
                                         }
                                     }
-                                    // 3. Send end-of-file marker
+                                    // 3. send end-of-file marker
                                     Packet end_pkt{};
                                     end_pkt.type = PACKET_TYPE_END;
-                                    end_pkt.seqn = seqn; // Use the next sequence number
-                                    end_pkt.length = 0; // Length 0 indicates end
+                                    end_pkt.seqn = seqn; 
+                                    end_pkt.length = 0; // end
                                     if (!send_packet(backup_connected_socket, end_pkt)) {
                                         std::cerr << "[Primary Sync] Error sending END marker to backup (fd=" << backup_connected_socket << ").\n";
                                     }
-                                    file.close(); // Close the file stream
+                                    file.close(); // close the file stream
                                     std::cout << "[Primary Sync] Sent " << filename << " for user " << username << " to backup.\n";
                                 } else {
                                     std::cerr << "[Primary Sync] Could not open file " << full_filepath << " for sync.\n";
                                 }
                             }
-                            next_file:; // Label for goto
+                            next_file:; // label for goto
                         }
                     }
                 }
-                // After sending all files for all users, send a final ACK for the FULL_SYNC_REQUEST
+
+                if (!files_to_send) {
+                    std::cout << "[Primary Replication] No files found in server_storage to send for full sync.\n";
+                }
+
+                // send ACK for FULL_SYNC_COMPLETE, even if no files were sent
                 Packet final_ack_pkt;
                 final_ack_pkt.type = PACKET_TYPE_ACK;
                 std::string msg = "FULL_SYNC_COMPLETE";
                 final_ack_pkt.length = std::min((int)msg.size(), MAX_PAYLOAD_SIZE);
                 std::memcpy(final_ack_pkt.payload, msg.c_str(), final_ack_pkt.length);
-                send_packet(backup_connected_socket, final_ack_pkt);
+                if (!send_packet(backup_connected_socket, final_ack_pkt)) {
+                     std::cerr << "[Primary Replication] Error sending FULL_SYNC_COMPLETE ACK to backup (fd=" << backup_connected_socket << ").\n";
+                }
                 std::cout << "[Primary Replication] Sent FULL_SYNC_COMPLETE to backup (fd=" << backup_connected_socket << ").\n";
 
             } else {
@@ -111,7 +124,6 @@ void handle_backup_initial_sync_request(int backup_connected_socket) {
         } else {
             std::cerr << "[Primary Replication Listener] Received unexpected packet type " << pkt.type << " from backup (fd=" << backup_connected_socket << ").\n";
         }
-    }
     std::cout << "[Primary Replication Listener] Backup disconnected (fd=" << backup_connected_socket << ").\n";
     close(backup_connected_socket);
 }
@@ -122,54 +134,53 @@ void handle_primary_replication_push(int primary_connected_socket) {
     std::string current_username;
     std::string current_filename;
     std::ofstream outfile;
-    bool expecting_file_data = false; // State flag: are we currently receiving file data?
+    bool expecting_file_data = false;
 
     while (recv_packet(primary_connected_socket, pkt)) {
         if (pkt.type == PACKET_TYPE_CMD) {
             std::string header(pkt.payload, pkt.length);
-            // Handle "replicate_upload" command (start of a file transfer)
+            // start of a file transfer
             if (header.rfind("replicate_upload|", 0) == 0) {
                 size_t p1 = header.find('|');
                 size_t p2 = header.find('|', p1 + 1);
                 if (p1 == std::string::npos || p2 == std::string::npos) {
                     std::cerr << "[Backup Replication] Malformed upload replication header: " << header << '\n';
-                    continue; // Skip malformed packet
+                    continue; // skip malformed packet
                 }
                 current_username = header.substr(p1 + 1, p2 - p1 - 1);
                 current_filename = header.substr(p2 + 1);
 
                 std::string full_path = get_sync_dir(current_username) + "/" + current_filename;
                 
-                // Acquire file_mutex before opening/creating the file
+                // file_mutex before opening/creating the file
                 std::lock_guard<std::mutex> lock(file_mutex);
                 outfile.open(full_path, std::ios::binary);
                 if (!outfile.is_open()) {
                     std::cerr << "[Backup Replication] Failed to open file for writing: " << full_path << '\n';
-                    // Consider sending NACK to primary if protocol supports it
                     continue;
                 }
-                expecting_file_data = true; // Now we expect DATA packets for this file
+                expecting_file_data = true; 
                 std::cout << "[Backup Replication] Preparing to receive file push: " << full_path << '\n';
 
             }
-            // Handle "replicate_delete" command
+            // handle "replicate_delete" command
             else if (header.rfind("replicate_delete|", 0) == 0) {
                 size_t p1 = header.find('|');
                 size_t p2 = header.find('|', p1 + 1);
                 if (p1 == std::string::npos || p2 == std::string::npos) {
                     std::cerr << "[Backup Replication] Malformed delete replication header: " << header << '\n';
-                    continue; // Skip malformed packet
+                    continue; // skip malformed packet
                 }
                 current_username = header.substr(p1 + 1, p2 - p1 - 1);
                 current_filename = header.substr(p2 + 1);
 
                 std::string full_path = get_sync_dir(current_username) + "/" + current_filename;
                 
-                // Acquire file_mutex before deleting the file
+                // file_mutex before deleting the file
                 std::lock_guard<std::mutex> lock(file_mutex);
                 if (std::filesystem::exists(full_path) && std::filesystem::remove(full_path)) {
                     std::cout << "[Backup Replication] Deleted file push: " << full_path << '\n';
-                    // Send ACK back to primary for successful deletion
+                    // send ACK back to primary for successful deletion
                     Packet ack_pkt{}; ack_pkt.type = PACKET_TYPE_ACK;
                     std::string ack_msg = "DELETE_ACK_OK";
                     ack_pkt.length = std::min((int)ack_msg.size(), MAX_PAYLOAD_SIZE);
@@ -177,34 +188,32 @@ void handle_primary_replication_push(int primary_connected_socket) {
                     send_packet(primary_connected_socket, ack_pkt);
                 } else {
                     std::cerr << "[Backup Replication] Error deleting file push or file not found: " << full_path << '\n';
-                    // Consider sending NACK for deletion failure
                 }
-                expecting_file_data = false; // No data expected after a delete command
+                expecting_file_data = false; // no data expected after a delete command
             } else {
                  std::cerr << "[Backup Replication] Received unknown replication CMD: " << header << '\n';
             }
         }
-        // Handle DATA packets (file content)
+        // handle DATA packets (file content)
         else if (pkt.type == PACKET_TYPE_DATA && expecting_file_data) {
             if (outfile.is_open()) {
                 outfile.write(pkt.payload, pkt.length);
                 if (!outfile) {
                     std::cerr << "[Backup Replication] Error writing file data to disk. Closing file: " << current_filename << '\n';
-                    outfile.close(); // Close file to prevent further corruption
+                    outfile.close(); // close file to prevent further corruption
                     expecting_file_data = false;
-                    // Consider sending NACK to primary indicating write failure
                 }
             } else {
-                std::cerr << "[Backup Replication] Received DATA packet but no file is open for writing. Possible protocol error.\n";
-                // This state indicates a protocol mismatch or error from primary
+                std::cerr << "[Backup Replication] Received DATA packet but no file is open for writing.\n";
+                // protocol mismatch or error from primary
             }
         }
-        // Handle END packet (end of file transfer)
+        // handle END packet (end of file transfer)
         else if (pkt.type == PACKET_TYPE_END && expecting_file_data) {
             if (outfile.is_open()) {
-                outfile.close(); // Close the file stream
+                outfile.close(); // close the file stream
                 std::cout << "[Backup Replication] File push received and saved: " << current_filename << '\n';
-                // Send ACK back to primary for successful file transfer completion
+                // send ACK to primary for successful file transfer completion
                 Packet ack_pkt{}; ack_pkt.type = PACKET_TYPE_ACK;
                 std::string ack_msg = "UPLOAD_ACK_OK";
                 ack_pkt.length = std::min((int)ack_msg.size(), MAX_PAYLOAD_SIZE);
@@ -213,16 +222,16 @@ void handle_primary_replication_push(int primary_connected_socket) {
             } else {
                 std::cerr << "[Backup Replication] Received END packet but no file was open. Possible protocol error.\n";
             }
-            expecting_file_data = false; // Reset state
+            expecting_file_data = false; // reset state
         }
-        // Handle any other unexpected packet types
+        // handle any other unexpected packet types
         else {
             std::cerr << "[Backup Replication] Received unexpected packet type " << pkt.type << " during replication push.\n";
         }
     }
     std::cout << "[Backup Replication Listener] Primary disconnected from push channel (fd=" << primary_connected_socket << ").\n";
-    if (outfile.is_open()) outfile.close(); // Clean up if file was partially open
-    close(primary_connected_socket);
+    if (outfile.is_open()) outfile.close(); // clean up if file was partially open
+    close(primary_connected_socket); // close socket
 }
 
 // implementation of the functions in replication.h:
@@ -499,19 +508,36 @@ void start_backup_replication_listener() {
 
 void request_full_sync_from_primary(const std::string& primary_ip) {
     std::cout << "[Backup] Requesting full sync from primary " << primary_ip << ":" << REPLICATION_PORT << '\n';
-    int s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s < 0) { 
-        perror("[Backup sync] socket creation failed");
-        return; 
-    }
+    int s = -1;
+    int max_retries = 10;
+    int current_retry = 0;
+    bool connected = false;
+    while (!connected && current_retry < max_retries) {
 
-    sockaddr_in sa{};
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(REPLICATION_PORT);
-    if (inet_pton(AF_INET, primary_ip.c_str(), &(sa.sin_addr)) != 1) {
-        std::cerr << "[Backup sync] Invalid IP address for primary " << primary_ip << '\n';
-        close(s);
-        return;
+        s = socket(AF_INET, SOCK_STREAM, 0);
+        if (s < 0) { 
+            perror("[Backup sync] socket creation failed");
+            return; 
+        }
+
+        sockaddr_in sa{};
+        sa.sin_family = AF_INET;
+        sa.sin_port = htons(REPLICATION_PORT);
+        if (inet_pton(AF_INET, primary_ip.c_str(), &(sa.sin_addr)) != 1) {
+            std::cerr << "[Backup sync] Invalid IP address for primary " << primary_ip << '\n';
+            close(s);
+            return;
+        }
+        if (connect(s, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) < 0) {
+            std::cerr << "[Backup sync] Failed to connect to primary " << primary_ip << ":" << REPLICATION_PORT << " (attempt " << (current_retry + 1) << "/" << max_retries << "). Retrying...\n";
+            close(s); // close failed socket
+            // exponential backoff: sleep for 1s, then 2s, 4s, etc., up to a max
+            std::this_thread::sleep_for(std::chrono::seconds(1 << std::min(current_retry, 4))); // Cap sleep at 16s (2^4)
+            current_retry++;
+        } else {
+            connected = true;
+            std::cout << "[Backup sync] Successfully connected to primary for full sync.\n";
+        }
     }
 
     // Connect to the primary's replication listener port

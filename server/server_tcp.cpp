@@ -22,8 +22,6 @@
 #include "replication.h"
 #include "server_tcp.h"
 
-
-
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
 
@@ -510,7 +508,12 @@ void run_as_primary() {
     start_primary_heartbeat_ping();
 
     // Start the primary's dedicated replication listener for backups
-    start_primary_replication_listener();
+    start_primary_replication_listener(); 
+
+    // add timer 
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+
+    connect_to_all_backup_replication_ports_for_push();
 
     // Give spawned threads a moment to initialize their services (e.g., open sockets).
     // This is a simple way to mitigate race conditions where initialization in a
@@ -543,13 +546,14 @@ void run_as_backup(const std::string& primary_ip) {
     // listening for its heartbeats
     start_backup_heartbeat_listener(primary_ip);
 
-    // Listen for replication data (listen_for_replication_data)
+    // Listen for replication data 
     start_backup_replication_listener();
-    // We must wait a bit to ensure the replication listener socket is up and running
-    // before we ask the primary to connect to it. This avoids a race condition.
+
+    //add timer
     std::this_thread::sleep_for(std::chrono::seconds(3));
+
     request_full_sync_from_primary(primary_ip);
-    
+
     // Stay alive until elected as new primary in a leader election
     while (g_role.load() == ROLE_BACKUP)
     {
@@ -570,6 +574,10 @@ static void usage(const char* prog)
 
 int main(int argc, char* argv[])
 {
+
+    // set cout to unbuffered mode: allow real-time logging/prevents out of order messages
+    std::cout << std::unitbuf;
+
     // Check for the minimum number of arguments.
     // For primary: server -p --ip <self_ip> (4 args)
     // For backup:  server -b <primary_ip> --ip <self_ip> (5 args, but -p needs 4)
@@ -582,6 +590,16 @@ int main(int argc, char* argv[])
     std::string   role_flag;         // Stores the role flag ("-p" for primary, "-b" for backup).
     std::string   primary_ip;        // Stores the IP address of the primary server (only used if this server is a backup).
     std::string   self_ip;           // Stores the IP address of this server instance.
+
+    // for the replication to work:
+    // ensure 'server_storage' base directory exists before any operations
+    std::error_code ec;
+    std::filesystem::create_directories("server_storage", ec);
+    if (ec) {
+        std::cerr << "Error: Could not create server_storage directory: " << ec.message() << '\n';
+        return 1; // exit if this critical directory cannot be created
+    }
+    std::cout << "Ensured 'server_storage' directory exists.\n";
 
     // Loop through the command-line arguments.
     for (int i = 1; i < argc; ++i)

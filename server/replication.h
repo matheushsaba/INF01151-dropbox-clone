@@ -51,5 +51,8 @@ void start_backup_replication_listener();
 // it requests all data
 void request_full_sync_from_primary(const std::string& primary_ip);
 
+void replication_add_peer(const std::string& ip, int port = REPLICATION_PORT);
+void replication_remove_peer(const std::string& ip);
+
 
 
