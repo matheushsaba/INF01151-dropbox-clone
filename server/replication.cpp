@@ -627,6 +627,31 @@ void request_full_sync_from_primary(const std::string& primary_ip) {
     close(s);
 }
 
+void replication_add_peer(const std::string& ip, int port) {
+    std::lock_guard<std::mutex> lock(g_replication_peers_mtx);
+    // check if peer already exists to avoid duplicates
+    for (const auto& peer : g_replication_peers) {
+        if (peer.ip == ip) {
+            return; // peer already in list
+        }
+    }
+    g_replication_peers.push_back({ip, port, -1}); // -1 for push_socket_fd initially
+    std::cout << "[Replication] Added peer " << ip << " to replication list.\n";
+}
 
+void replication_remove_peer(const std::string& ip) {
+    std::lock_guard<std::mutex> lock(g_replication_peers_mtx);
+    auto it = std::remove_if(g_replication_peers.begin(), g_replication_peers.end(),
+                             [&](const PeerReplicationInfo& p){ return p.ip == ip; });
+    if (it != g_replication_peers.end()) {
+        // close the push socket if it was active for this peer
+        if (it->push_socket_fd != -1) {
+            close(it->push_socket_fd);
+            it->push_socket_fd = -1; // mark as disconnected
+        }
+        g_replication_peers.erase(it, g_replication_peers.end());
+        std::cout << "[Replication] Removed peer " << ip << " from replication list.\n";
+    }
+}
 
 
