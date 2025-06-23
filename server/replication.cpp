@@ -21,7 +21,7 @@ std::mutex g_replication_peers_mtx;
 // private helper functions:
 
 // handles an incoming connection from a backup server on the primary
-void handle_backup_initial_sync_request(int backup_connected_socket) {
+void handle_backup_initial_sync_request(int backup_connected_socket, const std::string& server_id) {
     Packet pkt;
     if (!recv_packet(backup_connected_socket, pkt)) {
         std::cerr << "[Primary Replication] Error receiving initial sync request packet. Closing socket.\n";
@@ -38,7 +38,7 @@ void handle_backup_initial_sync_request(int backup_connected_socket) {
                 // file_mutex to ensure consistent read of server_storage
                 std::lock_guard<std::mutex> lock(file_mutex);
 
-                std::string base_dir = "server_storage";
+                std::string base_dir = "server_storage_" + server_id;
                 bool files_to_send = false;
 
                 // iterate through all user directories in server_storage
@@ -129,7 +129,7 @@ void handle_backup_initial_sync_request(int backup_connected_socket) {
 }
 
 // handles incoming push replication messages from the primary.
-void handle_primary_replication_push(int primary_connected_socket) {
+void handle_primary_replication_push(int primary_connected_socket, const std::string& server_id) {
     Packet pkt;
     std::string current_username;
     std::string current_filename;
@@ -150,7 +150,7 @@ void handle_primary_replication_push(int primary_connected_socket) {
                 current_username = header.substr(p1 + 1, p2 - p1 - 1);
                 current_filename = header.substr(p2 + 1);
 
-                std::string full_path = get_sync_dir(current_username) + "/" + current_filename;
+                std::string full_path = get_sync_dir(current_username, server_id) + "/" + current_filename;
                 
                 // file_mutex before opening/creating the file
                 std::lock_guard<std::mutex> lock(file_mutex);
@@ -174,7 +174,7 @@ void handle_primary_replication_push(int primary_connected_socket) {
                 current_username = header.substr(p1 + 1, p2 - p1 - 1);
                 current_filename = header.substr(p2 + 1);
 
-                std::string full_path = get_sync_dir(current_username) + "/" + current_filename;
+                std::string full_path = get_sync_dir(current_username, server_id) + "/" + current_filename;
                 
                 // file_mutex before deleting the file
                 std::lock_guard<std::mutex> lock(file_mutex);
@@ -237,7 +237,7 @@ void handle_primary_replication_push(int primary_connected_socket) {
 // implementation of the functions in replication.h:
 
 // Primary: 
-void start_primary_replication_listener() {
+void start_primary_replication_listener(const std::string& server_id) {
     int listener_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (listener_socket < 0) {
         perror("error opening primary replication listener socket");
@@ -274,7 +274,7 @@ void start_primary_replication_listener() {
     // thread that will continue accepting incoming connections from backup servers 
     // each accepted connection will be handled in its own thread 
 
-    std::thread([listener_socket]() {
+    std::thread([listener_socket, server_id]() {
         while (true) {
             sockaddr_in backup_addr{};
             socklen_t backup_len = sizeof(backup_addr);
@@ -291,7 +291,7 @@ void start_primary_replication_listener() {
             std::cout << "[Primary] new backup connected to replication listener from " << ip_str << " (fd=" << backup_connected_socket << ")\n";
             
             // new detatched thread to handle this specific backup requests (like initial sync)
-            std::thread(handle_backup_initial_sync_request, backup_connected_socket).detach();
+            std::thread(handle_backup_initial_sync_request, backup_connected_socket, server_id).detach();
         }
     }).detach();
 }
@@ -335,14 +335,14 @@ void connect_to_all_backup_replication_ports_for_push() {
     }
 }
 
-void replicate_file_change(const std::string& username, const std::string& filename, PacketType change_type){
+void replicate_file_change(const std::string& username, const std::string& filename, PacketType change_type, const std::string& server_id){
     // mutex to ensure exclusive access to the list of peers and to ensure
     // each replication happens at a time
     std::lock_guard<std::mutex> lock(g_replication_peers_mtx);
 
     std::string full_path;
     if (change_type == PACKET_TYPE_DATA) { //for uploads/modifies
-        full_path = get_sync_dir(username) + "/" + filename;
+        full_path = get_sync_dir(username, server_id) + "/" + filename;
         if (!std::filesystem::exists(full_path)) {
             std::cerr << "[Primary] Cannot replicate upload: file " << full_path << " does not exist locally.\n";
             return;
@@ -453,7 +453,7 @@ void replicate_file_change(const std::string& username, const std::string& filen
 
 // backups:
 
-void start_backup_replication_listener() {
+void start_backup_replication_listener(const std::string& server_id) {
     int listener_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (listener_socket < 0) {
         perror("error opening backup replication listener socket");
@@ -487,7 +487,7 @@ void start_backup_replication_listener() {
 
     // the following thread waits for a connection from the primary
     // and if a new one is elected, it accepts the new conection
-    std::thread([listener_socket]() {
+    std::thread([listener_socket, server_id]() {
         while (true) {
             sockaddr_in primary_addr{};
             socklen_t primary_len = sizeof(primary_addr);
@@ -501,12 +501,12 @@ void start_backup_replication_listener() {
             std::cout << "[Backup] Connected to primary " << ip_str << ':' << ntohs(primary_addr.sin_port) << '\n';
             
             // detatch a thread to continuously handle incoming replication data from the primary
-            std::thread(handle_primary_replication_push, primary_connected_socket).detach();
+            std::thread(handle_primary_replication_push, primary_connected_socket, server_id).detach();
         }
     }).detach();
 }
 
-void request_full_sync_from_primary(const std::string& primary_ip) {
+void request_full_sync_from_primary(const std::string& primary_ip, const std::string& server_id) {
     std::cout << "[Backup] Requesting full sync from primary " << primary_ip << ":" << REPLICATION_PORT << '\n';
     int s = -1;
     int max_retries = 10;
@@ -568,7 +568,7 @@ void request_full_sync_from_primary(const std::string& primary_ip) {
                 size_t p2 = header.find('|', p1 + 1);
                 current_username = header.substr(p1 + 1, p2 - p1 - 1);
                 current_filename = header.substr(p2 + 1);
-                std::string full_path = get_sync_dir(current_username) + "/" + current_filename;
+                std::string full_path = get_sync_dir(current_username, server_id) + "/" + current_filename;
 
                 // protect file operations:
                 std::lock_guard<std::mutex> lock(file_mutex);
@@ -586,7 +586,7 @@ void request_full_sync_from_primary(const std::string& primary_ip) {
                 size_t p2 = header.find('|', p1 + 1);
                 current_username = header.substr(p1 + 1, p2 - p1 - 1);
                 current_filename = header.substr(p2 + 1);
-                std::string full_path = get_sync_dir(current_username) + "/" + current_filename;
+                std::string full_path = get_sync_dir(current_username, server_id) + "/" + current_filename;
 
                 std::lock_guard<std::mutex> lock(file_mutex); // protect file operation
                 if (std::filesystem::remove(full_path)) {

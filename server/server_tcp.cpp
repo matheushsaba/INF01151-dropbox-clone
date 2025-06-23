@@ -31,10 +31,10 @@ static SessionManager session_manager;
 std::atomic<ServerRole> g_role;
 std::string my_ip;
 
-std::string get_sync_dir(const std::string& username) {
+std::string get_sync_dir(const std::string& username, const std::string& server_id) { 
     namespace fs = std::filesystem;
 
-    fs::path sync_path = fs::path("server_storage") / ("sync_dir_" + username);
+    fs::path sync_path = fs::path("server_storage_" + server_id) / ("sync_dir_" + username);
 
     std::error_code ec;
     fs::create_directories(sync_path, ec);  // idempotent
@@ -47,7 +47,7 @@ std::string get_sync_dir(const std::string& username) {
 }
 
 // Function to deal with simple command messages
-void handle_command_client(int client_socket, const std::string& username) {
+void handle_command_client(int client_socket, const std::string& username, const std::string& server_id) {
     std::cout << "[RM-HANDLER] Thread 'handle_command_client' created for socket " << client_socket << std::endl;
     Packet pkt;
 
@@ -82,7 +82,7 @@ void handle_command_client(int client_socket, const std::string& username) {
                     username = command.substr(pos + 1);
                 }
 
-                std::string user_dir = get_sync_dir(username);
+                std::string user_dir = get_sync_dir(username, server_id);
                 std::vector<FileInfo> file_infos;
 
                 for (const auto& entry : std::filesystem::directory_iterator(user_dir)) {
@@ -124,7 +124,7 @@ void handle_command_client(int client_socket, const std::string& username) {
                 send_packet(client_socket, end_pkt);
             } else if (command.rfind("download", 0) == 0) {
                 std::string filename = command.substr(9);
-                std::string full_path = get_sync_dir(username) + "/" + filename;
+                std::string full_path = get_sync_dir(username, server_id) + "/" + filename;
 
                 if (std::filesystem::exists(full_path)) {
                     std::ifstream file(full_path, std::ios::binary);
@@ -163,7 +163,7 @@ void handle_command_client(int client_socket, const std::string& username) {
     }
             } else if (command.rfind("delete", 0) == 0) {
                 std::string filename = command.substr(7);
-                std::string full_path = get_sync_dir(username) + "/" + filename;
+                std::string full_path = get_sync_dir(username, server_id) + "/" + filename;
 
                 if (std::filesystem::remove(full_path)) {
                     const char* reply = "Arquivo deletado com sucesso.";
@@ -242,7 +242,7 @@ void handle_watcher_client(int client_socket, const std::string& dir) {
     close(fd);
 }
 
-void handle_file_client(int client_socket) {
+void handle_file_client(int client_socket, const std::string& server_id) {
     std::cout << "[RM-HANDLER] Thread 'handle_file_client' iniciada para o socket " << client_socket << std::endl;
 
     Packet pkt;
@@ -274,13 +274,13 @@ void handle_file_client(int client_socket) {
         std::string filename = header.substr(p2 + 1);
 
         /* ---------- 2. Abre destino seguro ---------- */
-        std::string full_path = get_sync_dir(username) + "/" + filename;
+        std::string full_path = get_sync_dir(username, server_id) + "/" + filename;
         if (header.rfind("delfile|", 0) == 0) {
             std::lock_guard<std::mutex> lock(file_mutex);
             if (std::filesystem::exists(full_path)) {
                 if (std::filesystem::remove(full_path)) {
                     std::cout << "[DELETE] " << username << '/' << filename << " removed.\n";
-                    replicate_file_change(username, filename, PACKET_TYPE_DELETE);
+                    replicate_file_change(username, filename, PACKET_TYPE_DELETE, server_id);
                 } else {
                     std::cerr << "Error removing " << full_path << '\n';
                 }
@@ -311,7 +311,7 @@ void handle_file_client(int client_socket) {
                 }
                 if (pkt.length == 0) {                       // marcador EOF
                     std::cout << "Upload successful (" << filename << ").\n";
-                    replicate_file_change(username, filename, PACKET_TYPE_DATA);
+                    replicate_file_change(username, filename, PACKET_TYPE_DATA, server_id);
                     break;                                   // volta ao laço externo p/ próximo arquivo
                 }
                 out.write(pkt.payload, pkt.length);
@@ -360,7 +360,7 @@ int create_dynamic_socket(int& port_out) {
     return sockfd;
 }
 
-void handle_new_connection(int listener_socket) {
+void handle_new_connection(int listener_socket, const std::string& server_id) {
     while (true) {
         sockaddr_in client_addr{};
         socklen_t client_len = sizeof(client_addr);
@@ -370,7 +370,7 @@ void handle_new_connection(int listener_socket) {
             continue;
         }
 
-        std::thread([client_fd]() {
+        std::thread([client_fd, server_id]() {
 
             // Structure to hold pending session information
             // This will allow us to wait for both command and watch FDs to be ready
@@ -439,7 +439,7 @@ void handle_new_connection(int listener_socket) {
             close(client_fd);
             
             // Thread to accept the command connection
-            std::thread([cmd_sock, pending_session, &username, &ctrl]() {
+            std::thread([cmd_sock, pending_session, &username, &ctrl, server_id]() {
                 sockaddr_in tmp{};
                 socklen_t tmp_len = sizeof(tmp);
                 int accepted_fd = accept(cmd_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
@@ -456,7 +456,7 @@ void handle_new_connection(int listener_socket) {
 
 
                 if (accepted_fd >= 0) {
-                    handle_command_client(accepted_fd, username);
+                    handle_command_client(accepted_fd, username, server_id);
                 }
 
                 // the cleanup will be done by the cmd_fd (command) thread
@@ -488,14 +488,14 @@ void handle_new_connection(int listener_socket) {
 
             // Thread to accept file connections
             // This is independent and will handle file transfers
-            std::thread([file_sock]() {
+            std::thread([file_sock, server_id]() {
                 while (true) {
                     int file_client_fd = accept(file_sock, nullptr, nullptr);
                     if (file_client_fd < 0) {
                         perror("accept failed on file socket");
                         continue;
                     }
-                    std::thread(handle_file_client, file_client_fd).detach();
+                    std::thread(handle_file_client, file_client_fd, server_id).detach();
                 }
                 close(file_sock);
             }).detach();
@@ -514,7 +514,7 @@ void handle_new_connection(int listener_socket) {
                               << " and WATCH_FD=" << pending_session->watch_fd << std::endl;
                     
                     // the watcher thread needs to be started here, as we now have the FD
-                    std::thread(handle_watcher_client, pending_session->watch_fd, get_sync_dir(username)).detach();
+                    std::thread(handle_watcher_client, pending_session->watch_fd, get_sync_dir(username, server_id)).detach();
                 } else {
                      std::cerr << "❌ Failed to establish full session for " << username << ". Aborting.\n";
                      // close the command and watch sockets if they were opened
@@ -530,7 +530,7 @@ void handle_new_connection(int listener_socket) {
     }
 }
 
-int start_primary_server_client_connections() {
+int start_primary_server_client_connections(const std::string& server_id) {
     std::cout << std::unitbuf;
 
     // AF_INET for ipv4, SOCK_STREAM for TCP and 0 for default protocol. Slide 17 Aula-11
@@ -568,18 +568,18 @@ int start_primary_server_client_connections() {
     listen(listener_socket, 5);
     std::cout << "Listening for new client sessions on port 4000...\n";
 
-    handle_new_connection(listener_socket);
+    handle_new_connection(listener_socket, server_id);
 
     return 0;
 }
 
-void run_as_primary() {
+void run_as_primary(const std::string& server_id) {
     // Start listening for connections of backup servers and sending 
     // heartbeats to the ones already connected
     start_primary_heartbeat_ping();
 
     // Start the primary's dedicated replication listener for backups
-    start_primary_replication_listener(); 
+    start_primary_replication_listener(server_id); 
 
     // add timer 
     std::this_thread::sleep_for(std::chrono::seconds(3));
@@ -587,7 +587,7 @@ void run_as_primary() {
     connect_to_all_backup_replication_ports_for_push();
 
     // Start listening to client connections
-    start_primary_server_client_connections();
+    start_primary_server_client_connections(server_id);
 
     // It should never return
 }
@@ -607,7 +607,7 @@ void promote_to_primary()
     // the election thread, should now simply return and terminate.
 }
 
-void run_as_backup(const std::string& primary_ip) {
+void run_as_backup(const std::string& primary_ip, const std::string& server_id) {
     // Connects to the primary server via its ip and starts
     // listening for its heartbeats
     start_backup_heartbeat_listener(primary_ip);
@@ -615,12 +615,12 @@ void run_as_backup(const std::string& primary_ip) {
     // TODO: Listen for replication data
 
     // Listen for replication data 
-    start_backup_replication_listener();
+    start_backup_replication_listener(server_id);
 
     //add timer
     std::this_thread::sleep_for(std::chrono::seconds(3));
 
-    request_full_sync_from_primary(primary_ip);
+    request_full_sync_from_primary(primary_ip, server_id);
 
     // Stay alive until elected as new primary in a leader election
     while (g_role.load() == ROLE_BACKUP)
@@ -630,7 +630,7 @@ void run_as_backup(const std::string& primary_ip) {
     // TODO: should stop listening for replicator data here
     // If the while loop exits, it means we have been promoted.
     // The main thread now takes on the primary role.
-    run_as_primary();
+    run_as_primary(server_id);
 }
 
 static void usage(const char* prog_name)
@@ -646,9 +646,9 @@ int main(int argc, char* argv[])
 {
     std::cout << std::unitbuf;
     // Minimum args:
-    // Primary: server -p --ip <self_ip> --frontend-ip <fe_ip> (6 args)
-    // Backup:  server -b <primary_ip> --ip <self_ip> --frontend-ip <fe_ip> (7 args)
-    if (argc < 6)
+    // Primary: server -p --ip <self_ip> --frontend-ip <fe_ip> --id <server_id> (8 args)
+    // Backup:  server -b <primary_ip> --ip <self_ip> --frontend-ip <fe_ip> --id <server_id> (9 args)
+    if (argc < 8)
     { 
         usage(argv[0]); 
         return 1; 
@@ -658,16 +658,7 @@ int main(int argc, char* argv[])
     std::string primary_ip;
     std::string self_ip;
     std::string frontend_ip;
-
-    // for the replication to work:
-    // ensure 'server_storage' base directory exists before any operations
-    std::error_code ec;
-    std::filesystem::create_directories("server_storage", ec);
-    if (ec) {
-        std::cerr << "Error: Could not create server_storage directory: " << ec.message() << '\n';
-        return 1; // exit if this critical directory cannot be created
-    }
-    std::cout << "Ensured 'server_storage' directory exists.\n";
+    std::string server_id;
 
     // Loop through the command-line arguments.
     for (int i = 1; i < argc; ++i)
@@ -709,6 +700,15 @@ int main(int argc, char* argv[])
             }
             frontend_ip = argv[i];
         }
+        else if (arg == "--id") {
+            if (++i >= argc)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+            server_id = argv[i];
+        }
+
         else    // unknown token
         {
             // If an unrecognized argument is found, print usage and exit.
@@ -734,6 +734,16 @@ int main(int argc, char* argv[])
     }
     my_ip = self_ip;                     // Store self_ip in the global variable for use in other parts of the server.
 
+    // for the replication to work:
+    // ensure 'server_storage' base directory exists before any operations
+    std::error_code ec;
+    std::filesystem::create_directories("server_storage_" + server_id, ec);
+    if (ec) {
+        std::cerr << "Error: Could not create server_storage directory: " << ec.message() << '\n';
+        return 1; // exit if this critical directory cannot be created
+    }
+    std::cout << "Ensured 'server_storage_id' directory exists.\n";
+
     // Initialize the Bully election algorithm listener with this server's IP.
     bully_init(my_ip);
     bully_set_frontend_ip(frontend_ip);
@@ -743,14 +753,14 @@ int main(int argc, char* argv[])
     {
         g_role.store(ROLE_PRIMARY); // Set the global role to primary
         std::cout << "Starting as PRIMARY on " << my_ip << '\n';
-        run_as_primary(); // Blocks indefinitely
+        run_as_primary(server_id); // Blocks indefinitely
     }
     else if (role_flag == "-b")
     {
         std::cout << "Starting as BACKUP on " << my_ip
                   << "  (primary = " << primary_ip << ")\n";
         g_role.store(ROLE_BACKUP);  // Set the global role to backup
-        run_as_backup(primary_ip);  // Blocks until this server is promoted
+        run_as_backup(primary_ip, server_id);  // Blocks until this server is promoted
     }
     else
     {

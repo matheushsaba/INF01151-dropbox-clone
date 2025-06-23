@@ -29,7 +29,7 @@ extern std::mutex g_replication_peers_mtx;
 // start listener thread on the replication port and accepts connections
 // from backup servers that will pull data from the primary server
 // each accepted connection will be handled in a new detached thread
-void start_primary_replication_listener();
+void start_primary_replication_listener(const std::string& server_id);
 
 // maintains TCP connections from the primary to the backup servers,
 // (on their replication ports) that will be used by the primary to push
@@ -38,19 +38,19 @@ void connect_to_all_backup_replication_ports_for_push();
 
 // called whenever a file in sync_dir changes due to a client operation
 // pushes changes and waits for acks from the backups
-void replicate_file_change(const std::string& username, const std::string& filename, PacketType change_type);
+void replicate_file_change(const std::string& username, const std::string& filename, PacketType change_type, const std::string& server_id);
 
 // Backups:
 
 // starts a listener thread to accept incoming connections from the 
 // primary server to this backup - accepts one connection and
 // should restart if the primry disconnects, so a new primary can connect 
-void start_backup_replication_listener();
+void start_backup_replication_listener(const std::string& server_id);
 
 // called when a backup server starts or becomes the new primary
 // to ensure its local sync_dir is consistent with the primary 
 // it requests all data
-void request_full_sync_from_primary(const std::string& primary_ip);
+void request_full_sync_from_primary(const std::string& primary_ip, const std::string& server_id);
 
 void replication_add_peer(const std::string& ip, int port = REPLICATION_PORT);
 void replication_remove_peer(const std::string& ip);

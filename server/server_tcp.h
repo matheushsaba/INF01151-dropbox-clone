@@ -14,16 +14,16 @@ extern std::mutex socket_creation_mutex;
 extern std::string my_ip;
 
 // declarações de funções
-std::string get_sync_dir(const std::string& username);
+std::string get_sync_dir(const std::string& username, const std::string& server_id);
 
-void handle_command_client(int client_socket, const std::string& username);
+void handle_command_client(int client_socket, const std::string& username, const std::string& server_id);
 void handle_watcher_client(int client_socket, const std::string& dir);
-void handle_file_client(int client_socket);
+void handle_file_client(int client_socket, const std::string& server_id);
 
 int create_dynamic_socket(int& port_out);
-void handle_new_connection(int listener_socket);
+void handle_new_connection(int listener_socket, const std::string& server_id);
 
-int start_primary_server_client_connections();
-void run_as_primary();
+int start_primary_server_client_connections(const std::string& server_id);
+void run_as_primary(const std::string& server_id);
 void promote_to_primary();
-void run_as_backup(const std::string& primary_ip);
+void run_as_backup(const std::string& primary_ip, const std::string& server_id);
