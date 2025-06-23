@@ -246,7 +246,7 @@ void start_primary_replication_listener(const std::string& server_id) {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(REPLICATION_PORT);
+    addr.sin_port = htons(SYNC_PORT);
 
     int optval = 1;
     // allow reuse of local addresses
@@ -269,7 +269,7 @@ void start_primary_replication_listener(const std::string& server_id) {
         std::exit(EXIT_FAILURE);
     }
 
-    std::cout << "[Primary] Replication listener active on port " << REPLICATION_PORT << " (for backups pulling sync data)...\n";
+    std::cout << "[Primary] Replication listener active on port " << SYNC_PORT << " (for backups pulling sync data)...\n";
 
     // thread that will continue accepting incoming connections from backup servers 
     // each accepted connection will be handled in its own thread 
@@ -507,9 +507,9 @@ void start_backup_replication_listener(const std::string& server_id) {
 }
 
 void request_full_sync_from_primary(const std::string& primary_ip, const std::string& server_id) {
-    std::cout << "[Backup] Requesting full sync from primary " << primary_ip << ":" << REPLICATION_PORT << '\n';
+    std::cout << "[Backup] Requesting full sync from primary " << primary_ip << ":" << SYNC_PORT << '\n';
     int s = -1;
-    int max_retries = 10;
+    int max_retries = 5;
     int current_retry = 0;
     bool connected = false;
     while (!connected && current_retry < max_retries) {
@@ -522,14 +522,14 @@ void request_full_sync_from_primary(const std::string& primary_ip, const std::st
 
         sockaddr_in sa{};
         sa.sin_family = AF_INET;
-        sa.sin_port = htons(REPLICATION_PORT);
+        sa.sin_port = htons(SYNC_PORT);
         if (inet_pton(AF_INET, primary_ip.c_str(), &(sa.sin_addr)) != 1) {
             std::cerr << "[Backup sync] Invalid IP address for primary " << primary_ip << '\n';
             close(s);
             return;
         }
         if (connect(s, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) < 0) {
-            std::cerr << "[Backup sync] Failed to connect to primary " << primary_ip << ":" << REPLICATION_PORT << " (attempt " << (current_retry + 1) << "/" << max_retries << "). Retrying...\n";
+            std::cerr << "[Backup sync] Failed to connect to primary " << primary_ip << ":" << SYNC_PORT << " (attempt " << (current_retry + 1) << "/" << max_retries << "). Retrying...\n";
             close(s); // close failed socket
             // exponential backoff: sleep for 1s, then 2s, 4s, etc., up to a max
             std::this_thread::sleep_for(std::chrono::seconds(1 << std::min(current_retry, 4))); // Cap sleep at 16s (2^4)
@@ -625,6 +625,33 @@ void request_full_sync_from_primary(const std::string& primary_ip, const std::st
     }
     if (outfile.is_open()) outfile.close();
     close(s);
+}
+
+void replication_add_peer(const std::string& ip, int port) {
+    std::lock_guard<std::mutex> lock(g_replication_peers_mtx);
+    // check if peer already exists to avoid duplicates
+    for (const auto& peer : g_replication_peers) {
+        if (peer.ip == ip) {
+            return; // peer already in list
+        }
+    }
+    g_replication_peers.push_back({ip, port, -1}); // -1 for push_socket_fd initially
+    std::cout << "[Replication] Added peer " << ip << " to replication list.\n";
+}
+
+void replication_remove_peer(const std::string& ip) {
+    std::lock_guard<std::mutex> lock(g_replication_peers_mtx);
+    auto it = std::remove_if(g_replication_peers.begin(), g_replication_peers.end(),
+                             [&](const PeerReplicationInfo& p){ return p.ip == ip; });
+    if (it != g_replication_peers.end()) {
+        // close the push socket if it was active for this peer
+        if (it->push_socket_fd != -1) {
+            close(it->push_socket_fd);
+            it->push_socket_fd = -1; // mark as disconnected
+        }
+        g_replication_peers.erase(it, g_replication_peers.end());
+        std::cout << "[Replication] Removed peer " << ip << " from replication list.\n";
+    }
 }
 
 

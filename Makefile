@@ -87,4 +87,4 @@ run_frontend: $(FRONTEND_BIN) killports
 # ---------------------------------------------------------------------------
 clean:
 	@echo "🧹  Cleaning build artefacts and storage files…"
-	$(RM) -r $(BUILD_DIR) $(BINDIR) $(STORAGEDIRS)
+	$(RM) -r $(BUILD_DIR) $(BINDIR) $(STORAGEDIRS)_*

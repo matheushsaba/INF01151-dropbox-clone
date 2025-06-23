@@ -8,7 +8,7 @@
 
 // dedicated port for inter-server replication communication
 constexpr int REPLICATION_PORT = 5003;
-
+constexpr int SYNC_PORT = 5005;
 // Primary:
 
 struct PeerReplicationInfo { //maybe we could put this in a separate file for heartbeat, election bully and replication to use?
