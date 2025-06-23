@@ -581,7 +581,6 @@ void run_as_primary() {
     // Start the primary's dedicated replication listener for backups
     start_primary_replication_listener(); 
 
-    // add timer 
     std::this_thread::sleep_for(std::chrono::seconds(3));
 
     connect_to_all_backup_replication_ports_for_push();
@@ -589,7 +588,6 @@ void run_as_primary() {
     // Start listening to client connections
     start_primary_server_client_connections();
 
-    // It should never return
 }
 
 void promote_to_primary() 
@@ -625,11 +623,20 @@ void run_as_backup(const std::string& primary_ip) {
     // Stay alive until elected as new primary in a leader election
     while (g_role.load() == ROLE_BACKUP)
     {
-        std::this_thread::sleep_for(std::chrono::seconds(3));
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-    // TODO: should stop listening for replicator data here
     // If the while loop exits, it means we have been promoted.
-    // The main thread now takes on the primary role.
+    // The main thread now tears down backup services before taking on the primary role.
+    std::cout << "[TRANSITION] Stopping backup services...\n";
+
+    // IMPORTANT: You must also stop the backup heartbeat listener.
+    // You will need to create a `stop_backup_heartbeat_listener()` function in `heartbeat.cpp`,
+    // similar to the one for the replication listener, to close its socket.
+    // stop_backup_heartbeat_listener();
+
+    // Stop the backup replication listener to free up the port.
+    stop_backup_replication_listener();
+
     run_as_primary();
 }
 

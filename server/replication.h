@@ -47,6 +47,8 @@ void replicate_file_change(const std::string& username, const std::string& filen
 // should restart if the primry disconnects, so a new primary can connect 
 void start_backup_replication_listener();
 
+void stop_backup_replication_listener();
+
 // called when a backup server starts or becomes the new primary
 // to ensure its local sync_dir is consistent with the primary 
 // it requests all data

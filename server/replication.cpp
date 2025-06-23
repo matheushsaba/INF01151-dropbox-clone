@@ -17,6 +17,8 @@
 // global variables
 std::vector<PeerReplicationInfo> g_replication_peers;
 std::mutex g_replication_peers_mtx;
+int g_backup_replication_listener_socket = -1; // To hold the backup listener socket FD
+std::thread g_backup_replication_listener_thread; // To hold the listener thread object
 
 // private helper functions:
 
@@ -248,6 +250,12 @@ void start_primary_replication_listener() {
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(REPLICATION_PORT);
 
+    // Add more detailed logging as requested
+    char ip_str_log[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &(addr.sin_addr), ip_str_log, INET_ADDRSTRLEN);
+    std::cout << "[Primary] Attempting to bind primary replication listener to "
+              << ip_str_log << ":" << ntohs(addr.sin_port) << "...\n";
+
     int optval = 1;
     // allow reuse of local addresses
     if (setsockopt(listener_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
@@ -259,6 +267,7 @@ void start_primary_replication_listener() {
     // bind primary replication listener socket
     if (bind(listener_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         perror("Error binding primary replication listener socket");
+        std::cerr << "[Primary] Failed to bind to " << ip_str_log << ":" << ntohs(addr.sin_port) << ".\n";
         close(listener_socket);
         std::exit(EXIT_FAILURE);
     }
@@ -287,9 +296,7 @@ void start_primary_replication_listener() {
             char ip_str[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &(backup_addr.sin_addr), ip_str, INET_ADDRSTRLEN);
             std::cout << "[Primary] new backup connected to replication listener: " << ip_str << ':' << ntohs(backup_addr.sin_port) << '\n';
-            // choose which output to keep
-            std::cout << "[Primary] new backup connected to replication listener from " << ip_str << " (fd=" << backup_connected_socket << ")\n";
-            
+
             // new detatched thread to handle this specific backup requests (like initial sync)
             std::thread(handle_backup_initial_sync_request, backup_connected_socket).detach();
         }
@@ -454,8 +461,8 @@ void replicate_file_change(const std::string& username, const std::string& filen
 // backups:
 
 void start_backup_replication_listener() {
-    int listener_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (listener_socket < 0) {
+    g_backup_replication_listener_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (g_backup_replication_listener_socket < 0) {
         perror("error opening backup replication listener socket");
         return; // won't receive pushes but still can participate in elections
     }
@@ -465,21 +472,27 @@ void start_backup_replication_listener() {
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(REPLICATION_PORT);
 
+    // Add more detailed logging as requested
+    char ip_str_log[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &(addr.sin_addr), ip_str_log, INET_ADDRSTRLEN);
+    std::cout << "[Backup] Attempting to bind backup replication listener to "
+              << ip_str_log << ":" << ntohs(addr.sin_port) << "...\n";
+
     int optval = 1;
-    if (setsockopt(listener_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+    if (setsockopt(g_backup_replication_listener_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
         perror("setsockopt SO_REUSEADDR failed for backup replication listener");
-        close(listener_socket);
+        close(g_backup_replication_listener_socket);
         return;
     }
 
-    if (bind(listener_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    if (bind(g_backup_replication_listener_socket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         perror("Error binding backup replication listener socket");
-        close(listener_socket);
+        close(g_backup_replication_listener_socket);
         return;
     }
-    if (listen(listener_socket, 1) < 0) { // 1 connection (with the primary)
+    if (listen(g_backup_replication_listener_socket, 1) < 0) { // 1 connection (with the primary)
         perror("Error listening on backup replication listener socket");
-        close(listener_socket);
+        close(g_backup_replication_listener_socket);
         return;
     }
 
@@ -487,12 +500,18 @@ void start_backup_replication_listener() {
 
     // the following thread waits for a connection from the primary
     // and if a new one is elected, it accepts the new conection
-    std::thread([listener_socket]() {
+    g_backup_replication_listener_thread = std::thread([]() {
         while (true) {
             sockaddr_in primary_addr{};
             socklen_t primary_len = sizeof(primary_addr);
-            int primary_connected_socket = accept(listener_socket, reinterpret_cast<sockaddr*>(&primary_addr), &primary_len);
+            int primary_connected_socket = accept(g_backup_replication_listener_socket, reinterpret_cast<sockaddr*>(&primary_addr), &primary_len);
             if (primary_connected_socket < 0) {
+                // If accept fails, it might be because the socket was closed during promotion.
+                // We should exit the thread gracefully.
+                if (g_backup_replication_listener_socket == -1) {
+                    std::cout << "[Backup] Replication listener thread exiting." << std::endl;
+                    break;
+                }
                 perror("accept failed on backup replication listener");
                 continue;
             }
@@ -503,7 +522,26 @@ void start_backup_replication_listener() {
             // detatch a thread to continuously handle incoming replication data from the primary
             std::thread(handle_primary_replication_push, primary_connected_socket).detach();
         }
-    }).detach();
+    });
+}
+
+void stop_backup_replication_listener() {
+    if (g_backup_replication_listener_socket != -1) {
+        std::cout << "[Backup] Stopping backup replication listener..." << std::endl;
+        int old_socket = g_backup_replication_listener_socket;
+        g_backup_replication_listener_socket = -1; // Signal thread to exit
+
+        // Forcefully unblock the accept() call in the listener thread
+        shutdown(old_socket, SHUT_RDWR);
+        close(old_socket);
+        std::cout << "[Backup] Closed backup replication listener socket." << std::endl;
+
+        // Wait for the listener thread to finish its execution. This is the crucial part.
+        if (g_backup_replication_listener_thread.joinable()) {
+            g_backup_replication_listener_thread.join();
+            std::cout << "[Backup] Backup replication listener thread has been joined." << std::endl;
+        }
+    }
 }
 
 void request_full_sync_from_primary(const std::string& primary_ip) {
@@ -626,7 +664,3 @@ void request_full_sync_from_primary(const std::string& primary_ip) {
     if (outfile.is_open()) outfile.close();
     close(s);
 }
-
-
-
-
