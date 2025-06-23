@@ -13,6 +13,7 @@
 #include <netinet/in.h>
 #include "election_bully.h"
 #include <algorithm>
+#include "replication.h"
 
 constexpr int HEARTBEAT_PORT        = 3002;      // single well-known port
 constexpr int HB_INTERVAL_MS = 250;       // send every 250 ms
@@ -113,6 +114,7 @@ void primary_heartbeat_accept_loop()
             if (std::find(peer_ips.begin(), peer_ips.end(), ip) == peer_ips.end()) 
             {
                 peer_ips.push_back(ip);
+                replication_add_peer(ip, REPLICATION_PORT);
                 should_broadcast = true; // Set a flag to broadcast after releasing the lock
             }
         } // The lock is released here
