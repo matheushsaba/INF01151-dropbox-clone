@@ -21,7 +21,8 @@
 #include "election_bully.h"
 #include "replication.h"
 #include "server_tcp.h"
-
+#include <vector>
+#include <condition_variable>
 std::mutex file_mutex;  // Global mutex used to synchronize access to shared resources (e.g., files)
 std::mutex socket_creation_mutex;
 
@@ -47,6 +48,7 @@ std::string get_sync_dir(const std::string& username) {
 
 // Function to deal with simple command messages
 void handle_command_client(int client_socket, const std::string& username) {
+    std::cout << "[RM-HANDLER] Thread 'handle_command_client' created for socket " << client_socket << std::endl;
     Packet pkt;
 
     while (true) {
@@ -241,12 +243,13 @@ void handle_watcher_client(int client_socket, const std::string& dir) {
 }
 
 void handle_file_client(int client_socket) {
+    std::cout << "[RM-HANDLER] Thread 'handle_file_client' iniciada para o socket " << client_socket << std::endl;
+
     Packet pkt;
 
     while (true) {                               // ❶ laço externo = 1-conexão / N-arquivos
         /* ---------- 1. Cabeçalho “putfile|<user>|<fname>” ---------- */
         if (!recv_packet(client_socket, pkt)) {          // EOF ou erro → fecha conexão
-            std::cerr << "End of connection.\n";
             break;
         }
         if (pkt.type != PACKET_TYPE_CMD) {               // protocolo inesperado
@@ -368,6 +371,17 @@ void handle_new_connection(int listener_socket) {
         }
 
         std::thread([client_fd]() {
+
+            // Structure to hold pending session information
+            // This will allow us to wait for both command and watch FDs to be ready
+            struct PendingSession {
+                std::mutex mtx;
+                std::condition_variable cv;
+                int cmd_fd = -1;
+                int watch_fd = -1;
+            };
+            auto pending_session = std::make_shared<PendingSession>();
+
             Packet pkt;
             if (!recv_packet(client_fd, pkt) || pkt.type != PACKET_TYPE_CMD) {
                 std::cerr << "❌ Error: failed to receive handshake packet.\n";
@@ -402,13 +416,15 @@ void handle_new_connection(int listener_socket) {
             int cmd_sock   = create_dynamic_socket(cmd_port);
             int watch_sock = create_dynamic_socket(watch_port);
             int file_sock  = create_dynamic_socket(file_port);
-            std::cerr << "🔗 Command socket: " << cmd_sock << '\n';
-            std::cerr << "🔗 Watcher socket: " << watch_sock << '\n';
-            std::cerr << "🔗 File transfer socket: " << file_sock << '\n';
-
+            std::cout << "[RM] Sessão para " << username << ": Porta de Comando=" << cmd_port 
+             << ", Porta de Watcher=" << watch_port << ", Porta de Arquivo=" << file_port << std::endl;
+            
             if (cmd_sock < 0 || watch_sock < 0 || file_sock < 0) {
                 std::cerr << "❌ Failed to create dynamic sockets.\n";
                 close(client_fd);
+                // Decrement the session count if socket creation fails
+                std::lock_guard<std::mutex> lock(ctrl.mtx);
+                ctrl.active_sessions--;
                 return;
             }
 
@@ -420,26 +436,32 @@ void handle_new_connection(int listener_socket) {
             memcpy(reply.payload, ports_msg.c_str(), reply.length);
             send_packet(client_fd, reply);
 
-            close(client_fd); // Always close handshake socket
-
-            // Accept follow-up connections from the client on the 3 dynamic sockets
-            sockaddr_in tmp{};
-            socklen_t tmp_len = sizeof(tmp);
-            int cmd_client_fd   = accept(cmd_sock,   reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
-            int watch_client_fd = accept(watch_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
-
-            session_manager_register(session_manager, username, cmd_client_fd, watch_client_fd);
-
-            // Detach watchers for command and watcher as before
-            std::thread([watch_client_fd, username]() {
-                handle_watcher_client(watch_client_fd, get_sync_dir(username));
-            }).detach();
-            std::thread([cmd_client_fd, username]() {
-                handle_command_client(cmd_client_fd, username);
-
-                // Cleanup on disconnect
-                auto& ctrl = user_controls[username];
+            close(client_fd);
+            
+            // Thread to accept the command connection
+            std::thread([cmd_sock, pending_session, &username, &ctrl]() {
+                sockaddr_in tmp{};
+                socklen_t tmp_len = sizeof(tmp);
+                int accepted_fd = accept(cmd_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
+                close(cmd_sock);
+                if (accepted_fd < 0) {
+                    perror("accept failed on command socket");
+                }
+                
                 {
+                    std::lock_guard<std::mutex> lock(pending_session->mtx);
+                    pending_session->cmd_fd = accepted_fd;
+                }
+                pending_session->cv.notify_all(); // Notify the main thread that command connection has been obtained
+
+
+                if (accepted_fd >= 0) {
+                    handle_command_client(accepted_fd, username);
+                }
+
+                // the cleanup will be done by the cmd_fd (command) thread
+                session_manager_close_by_cmd_fd(session_manager, accepted_fd);
+                 {
                     std::lock_guard<std::mutex> lock(ctrl.mtx);
                     ctrl.active_sessions--;
                 }
@@ -447,23 +469,62 @@ void handle_new_connection(int listener_socket) {
                 std::cout << "👋 Session ended for " << username << '\n';
             }).detach();
 
-            // Start a thread that loops and handles multiple file uploads
+            // Thread to accept the watcher connection
+            std::thread([watch_sock, pending_session]() {
+                sockaddr_in tmp{};
+                socklen_t tmp_len = sizeof(tmp);
+                int accepted_fd = accept(watch_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
+                close(watch_sock);
+                if (accepted_fd < 0) {
+                    perror("accept failed on watch socket");
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(pending_session->mtx);
+                    pending_session->watch_fd = accepted_fd;
+                }
+                pending_session->cv.notify_all(); // Notify the main thread that watch connection has been obtained
+            }).detach();
+
+            // Thread to accept file connections
+            // This is independent and will handle file transfers
             std::thread([file_sock]() {
                 while (true) {
-                    sockaddr_in tmp{};
-                    socklen_t tmp_len = sizeof(tmp);
-                    int file_client_fd = accept(file_sock, reinterpret_cast<sockaddr*>(&tmp), &tmp_len);
+                    int file_client_fd = accept(file_sock, nullptr, nullptr);
                     if (file_client_fd < 0) {
                         perror("accept failed on file socket");
                         continue;
                     }
                     std::thread(handle_file_client, file_client_fd).detach();
                 }
+                close(file_sock);
             }).detach();
 
-            close(cmd_sock);
-            close(watch_sock);
-            std::cout << "✅ User " << username << " fully connected (CMD/WATCH/FILE sockets established)\n";
+            // the main thread will wait for both command and watch FDs to be ready
+            {
+                std::unique_lock<std::mutex> lock(pending_session->mtx);
+                pending_session->cv.wait(lock, [&] {
+                    return pending_session->cmd_fd != -1 && pending_session->watch_fd != -1;
+                });
+
+                // now that we have both, we can call the original registration function
+                if (pending_session->cmd_fd >= 0 && pending_session->watch_fd >= 0) {
+                    session_manager_register(session_manager, username, pending_session->cmd_fd, pending_session->watch_fd);
+                    std::cout << "✅ User " << username << " session registered with CMD_FD=" << pending_session->cmd_fd
+                              << " and WATCH_FD=" << pending_session->watch_fd << std::endl;
+                    
+                    // the watcher thread needs to be started here, as we now have the FD
+                    std::thread(handle_watcher_client, pending_session->watch_fd, get_sync_dir(username)).detach();
+                } else {
+                     std::cerr << "❌ Failed to establish full session for " << username << ". Aborting.\n";
+                     // close the command and watch sockets if they were opened
+                     if (pending_session->cmd_fd >= 0) close(pending_session->cmd_fd);
+                     if (pending_session->watch_fd >= 0) close(pending_session->watch_fd);
+                     // decrement the session count
+                     std::lock_guard<std::mutex> lock(ctrl.mtx);
+                     ctrl.active_sessions--;
+                }
+            }
 
         }).detach();
     }
@@ -477,6 +538,16 @@ int start_primary_server_client_connections() {
     if (listener_socket < 0) {
         perror("Error opening listener socket");
         return -1;
+    }
+
+    // Set the SO_REUSEADDR socket option. This allows the server's listener_socket
+    // to bind to its designated address and port (e.g., port 4000) immediately
+    // after a previous instance of the server using that same port has been closed.
+    // Without this, the port might remain in a TIME_WAIT state, preventing a quick
+    // restart and causing "Address already in use" errors
+    int option = 1;
+    if (setsockopt(listener_socket, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option)) < 0) {
+        perror("setsockopt(SO_REUSEADDR) failed");
     }
 
     // Set server address and port. Slide 20 Aula-11
@@ -540,6 +611,8 @@ void run_as_backup(const std::string& primary_ip) {
     // Connects to the primary server via its ip and starts
     // listening for its heartbeats
     start_backup_heartbeat_listener(primary_ip);
+    
+    // TODO: Listen for replication data
 
     // Listen for replication data 
     start_backup_replication_listener();
@@ -554,37 +627,36 @@ void run_as_backup(const std::string& primary_ip) {
     {
         std::this_thread::sleep_for(std::chrono::seconds(3));
     }
-
+    // TODO: should stop listening for replicator data here
     // If the while loop exits, it means we have been promoted.
     // The main thread now takes on the primary role.
     run_as_primary();
 }
 
-static void usage(const char* prog)
+static void usage(const char* prog_name)
 {
-    std::cerr << "Usage:\n"
-              << "  " << prog << " -p --ip <self_ip>\n"
-              << "  " << prog << " -b <primary_ip> --ip <self_ip>\n";
+    std::cerr << "Usage:\n";
+    std::cerr << "  Primary: " << prog_name << " -p --ip <self_ip> --frontend-ip <fe_ip>\n";
+    std::cerr << "  Backup:  " << prog_name << " -b <primary_ip> --ip <self_ip> --frontend-ip <fe_ip>\n";
+    std::cerr << "Example (Primary): " << prog_name << " -p --ip 192.168.1.10 --frontend-ip 127.0.0.1\n";
+    std::cerr << "Example (Backup):  " << prog_name << " -b 192.168.1.10 --ip 192.168.1.11 --frontend-ip 127.0.0.1\n";
 }
 
 int main(int argc, char* argv[])
 {
-
-    // set cout to unbuffered mode: allow real-time logging/prevents out of order messages
-    std::cout << std::unitbuf;
-
-    // Check for the minimum number of arguments.
-    // For primary: server -p --ip <self_ip> (4 args)
-    // For backup:  server -b <primary_ip> --ip <self_ip> (5 args, but -p needs 4)
-    if (argc < 4)
+    // Minimum args:
+    // Primary: server -p --ip <self_ip> --frontend-ip <fe_ip> (6 args)
+    // Backup:  server -b <primary_ip> --ip <self_ip> --frontend-ip <fe_ip> (7 args)
+    if (argc < 6)
     { 
         usage(argv[0]); 
         return 1; 
     }
 
-    std::string   role_flag;         // Stores the role flag ("-p" for primary, "-b" for backup).
-    std::string   primary_ip;        // Stores the IP address of the primary server (only used if this server is a backup).
-    std::string   self_ip;           // Stores the IP address of this server instance.
+    std::string role_flag;
+    std::string primary_ip;
+    std::string self_ip;
+    std::string frontend_ip;
 
     // for the replication to work:
     // ensure 'server_storage' base directory exists before any operations
@@ -626,6 +698,16 @@ int main(int argc, char* argv[])
             }
             self_ip = argv[i];
         }
+        else if (arg == "--frontend-ip")
+        {
+            // Check if there's another argument after --frontend-ip for the frontend_ip.
+            if (++i >= argc)
+            {
+                usage(argv[0]);
+                return 1;
+            }
+            frontend_ip = argv[i];
+        }
         else    // unknown token
         {
             // If an unrecognized argument is found, print usage and exit.
@@ -638,12 +720,22 @@ int main(int argc, char* argv[])
     if (self_ip.empty()) 
     { 
         std::cerr << "--ip is required\n"; 
+        std::cerr << "Error: --ip is a required argument.\n";
+        usage(argv[0]);
         return 1; 
+    }
+    // Ensure that the --frontend-ip argument was provided.
+    if (frontend_ip.empty())
+    {
+        std::cerr << "Error: --frontend-ip is a required argument.\n";
+        usage(argv[0]);
+        return 1;
     }
     my_ip = self_ip;                     // Store self_ip in the global variable for use in other parts of the server.
 
     // Initialize the Bully election algorithm listener with this server's IP.
     bully_init(my_ip);
+    bully_set_frontend_ip(frontend_ip);
 
     // Determine the server's role based on the parsed role_flag.
     if (role_flag == "-p")
@@ -662,7 +754,7 @@ int main(int argc, char* argv[])
     else
     {
         // If no valid role flag (-p or -b) was provided, print usage and exit.
-        std::cerr << "Missing -p or -b flag\n";
+        std::cerr << "Error: Missing role flag -p or -b.\n";
         usage(argv[0]);
         return 1;
     }
